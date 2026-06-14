@@ -1,0 +1,11 @@
+playwright==1.49.0
+
+# Google Sheets renderer (reuses an existing authorized-user token; see render/runtime.py)
+google-api-python-client==2.197.0
+google-auth==2.54.0
+google-auth-oauthlib==1.4.0   # only for first-time/extra-scope consent
+
+# Engine dev/build tooling
+pymupdf==1.27.2.3   # extract Daniels/Pfitzinger tables from the source PDFs
+pytest==9.0.3       # golden tests for the deterministic engine
+pydantic==2.10.4    # store models + event payloads

@@ -1,0 +1,20 @@
+{
+  "files.watcherExclude": {
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "**/node_modules/*/**": true,
+    "**/.venv/**": true,
+    "**/venv/**": true,
+    "**/output/**": true,
+    "**/auth/**": true
+  },
+  "search.exclude": {
+    "**/.venv": true,
+    "**/venv": true,
+    "**/output": true,
+    "**/auth": true,
+    "**/*.jsonl": true,
+    "**/*.html": true,
+    "**/*.png": true
+  }
+}

@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""Verify repo-relative file paths cited in backticks in tracked docs.
+
+Scans CLAUDE.md, AGENTS.md, README.md, docs/cheatsheets/*.md, docs/architecture/*.md,
+docs/intake-and-engine.md, docs/intake-google-form.md (``` fenced blocks stripped first).
+
+Only checks paths that look like source tree references (contain '/' or are root
+files like main.py) and end with .py, .md, .sh, or .txt.
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+
+DOC_GLOBS = [
+    ROOT / "CLAUDE.md",
+    ROOT / "AGENTS.md",
+    ROOT / "README.md",
+    ROOT / "docs" / "intake-and-engine.md",
+    ROOT / "docs" / "intake-google-form.md",
+]
+
+BACKTICK = re.compile(r"`([^`]+)`")
+FENCED = re.compile(r"```[^\n]*\n[\s\S]*?```", re.MULTILINE)
+
+
+def _strip_fenced_blocks(text: str) -> str:
+    """Remove ``` fenced blocks so fenced examples are not scanned for `paths`."""
+    return FENCED.sub("", text)
+
+
+# Paths we intentionally cite that are not in-repo (optional / generated only).
+ALLOW_MISSING = frozenset()
+
+
+def _candidate_paths(raw: str) -> list[str]:
+    raw = raw.strip()
+    if not raw or raw.startswith("http://") or raw.startswith("https://"):
+        return []
+    if any(c in raw for c in ("*", "<", ">", "|", "\n")):
+        return []
+    # Skip inline code that is not a path (e.g. `YYYY-MM-DD`, flags)
+    if " " in raw and "/" not in raw:
+        return []
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    out: list[str] = []
+    for p in parts:
+        if p in ALLOW_MISSING:
+            continue
+        if "/" not in p and not p.endswith(".py") and not p.endswith(".md"):
+            continue
+        if not (p.endswith(".py") or p.endswith(".md") or p.endswith(".sh") or p.endswith(".txt")):
+            continue
+        if p.startswith("./"):
+            p = p[2:]
+        if ".." in p.split("/"):
+            continue
+        out.append(p)
+    return out
+
+
+def collect_paths() -> list[Path]:
+    files: list[Path] = list(DOC_GLOBS)
+    for sub in ("docs/cheatsheets", "docs/architecture"):
+        d = ROOT / sub
+        if d.is_dir():
+            files.extend(sorted(d.glob("*.md")))
+    seen: set[Path] = set()
+    ordered: list[Path] = []
+    for f in files:
+        if f in seen or not f.is_file():
+            continue
+        seen.add(f)
+        ordered.append(f)
+    return ordered
+
+
+def main() -> int:
+    missing: list[tuple[str, str]] = []
+    for doc in collect_paths():
+        text = _strip_fenced_blocks(doc.read_text(encoding="utf-8"))
+        for m in BACKTICK.finditer(text):
+            for rel in _candidate_paths(m.group(1)):
+                path = ROOT / rel
+                if not path.is_file():
+                    missing.append((str(doc.relative_to(ROOT)), rel))
+
+    if missing:
+        print("Missing files referenced in docs:", file=sys.stderr)
+        for doc_rel, file_rel in sorted(set(missing)):
+            print(f"  {doc_rel}: `{file_rel}`", file=sys.stderr)
+        return 1
+
+    print(f"check-doc-refs: OK ({len(collect_paths())} doc(s) scanned)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,26 @@
+# Exclude virtual environment
+.venv/
+venv/
+env/
+
+# Exclude scraped and raw outputs
+output/
+auth/
+*.jsonl
+*.png
+*.html
+output/**/*.txt
+
+# Exclude OS metadata
+.DS_Store
+.DS_Store?
+._*
+
+# Exclude caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

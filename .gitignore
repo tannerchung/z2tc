@@ -1,0 +1,37 @@
+# Saved login session — NEVER commit (contains your auth cookies)
+auth/
+.browser-profile/
+*.storage.json
+
+# Scraped output + athlete / club PII (names, Strava URLs, activity metadata)
+output/
+*.jsonl
+# If you write scrape exports next to the repo instead of under output/
+athletes.jsonl
+training.jsonl
+private/
+
+# Marathon book reference: PDFs + local page-scan folders (large / often copyrighted)
+*.pdf
+# PNG exports often live beside the ignored book dirs with a suffix
+Daniels-running-formula-png/
+Advanced Marathoning - Pfitzinger, Pete-png/
+*-book-png/
+*-book-pages/
+
+# Google OAuth client secrets if copied into the repo (Hermes default is ~/.hermes/)
+client_secret*.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# Reference books — copyrighted, do not commit (only generated numeric fixtures are kept)
+Advanced Marathoning - Pfitzinger, Pete/
+Daniels-running-formula/
+
+# OS
+.DS_Store
