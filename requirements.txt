@@ -7,5 +7,6 @@ google-auth-oauthlib==1.4.0   # only for first-time/extra-scope consent
 
 # Engine dev/build tooling
 pymupdf==1.27.2.3   # extract Daniels/Pfitzinger tables from the source PDFs
-pytest==9.0.3       # golden tests for the deterministic engine
+pytest==9.0.3       # regression tests for the deterministic engine
 pydantic==2.10.4    # store models + event payloads
+google-generativeai==0.8.4  # optional NL -> structured events (Gemini)

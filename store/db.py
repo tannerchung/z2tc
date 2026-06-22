@@ -179,7 +179,7 @@ class Store:
     def load_latest_plan(self, athlete_id: str) -> PlanArtifact | None:
         row = self._conn.execute(
             """SELECT * FROM plan_artifacts WHERE athlete_id = ?
-               ORDER BY created_at DESC LIMIT 1""",
+               ORDER BY created_at DESC, rowid DESC LIMIT 1""",
             (athlete_id,),
         ).fetchone()
         if not row:

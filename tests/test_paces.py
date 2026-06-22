@@ -3,7 +3,12 @@
 
 import pytest
 
-from engine.paces import daniels_paces, training_paces, vdot_bounds
+from engine.paces import (
+    daniels_paces,
+    training_paces,
+    vdot_bounds,
+    vdot_from_easy_pace,
+)
 
 # Book Table 5.2 per-mile values (E range, M, T). Interval is the per-mile equivalent
 # of the book's km/400 m split (e.g. VDOT 43 I = 4:26/km = 7:08/mi).
@@ -13,6 +18,8 @@ BOOK = {
     44: {"easy": "8:50-9:55", "marathon": "8:07", "threshold": "7:33", "interval": "7:00"},
     50: {"easy": "7:57-8:58", "marathon": "7:17", "threshold": "6:50", "interval": "6:18"},
     62: {"easy": "6:39-7:33", "marathon": "6:04", "threshold": "5:45", "interval": "5:17"},
+    70: {"easy": "6:01-6:50", "marathon": "5:28", "threshold": "5:13", "interval": "4:48"},
+    85: {"easy": "5:08-5:50", "marathon": "4:37", "threshold": "4:27", "interval": "4:06"},
 }
 
 
@@ -27,6 +34,19 @@ def test_interpolation_midpoint():
     # VDOT 43 M=8:17 (497s), VDOT 44 M=8:07 (487s) -> 43.5 = 8:12 (492s)
     assert training_paces(43.5)["marathon"] == "8:12"
     assert training_paces(43.5)["threshold"] == "7:38"  # 7:42 / 7:33 midpoint
+
+
+def test_vdot_from_easy_pace_inverse_midpoint():
+    # VDOT 43 easy 9:00–10:05 => midpoint (540 + 605) / 2 = 572.5 s/mi
+    mid = (9 * 60 + 0 + (10 * 60 + 5)) / 2
+    v = vdot_from_easy_pace(int(mid))
+    assert abs(v - 43.0) < 0.2
+
+
+def test_vdot_from_easy_pace_clamps():
+    lo, hi = vdot_bounds()
+    assert vdot_from_easy_pace(9999) == float(lo)
+    assert vdot_from_easy_pace(1) == float(hi)
 
 
 def test_clamps_outside_range():

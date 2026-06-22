@@ -14,17 +14,62 @@ from .paces import daniels_paces
 RACE_METERS = {"5K": 5000.0, "10K": 10000.0, "Half Marathon": 21097.5, "Marathon": 42195.0}
 
 
+def _vdot_for_velocity(distance_m: float, t_min: float) -> float:
+    """Daniels' VDOT for covering ``distance_m`` in ``t_min`` minutes (raw, unrounded).
+
+    Forward model (Daniels' Running Formula, 3rd ed., app. via the standard fit):
+    a velocity→VO2 cost curve divided by the fraction of VDOT sustainable for that
+    duration. Shared by ``vdot_from_race`` (measured race → VDOT) and
+    ``predict_race_time`` (VDOT → predicted race time, its inverse).
+    """
+    v = distance_m / t_min  # m/min
+    vo2 = -4.60 + 0.182258 * v + 0.000104 * v * v
+    pct = 0.8 + 0.1894393 * math.exp(-0.012778 * t_min) + 0.2989558 * math.exp(
+        -0.1932605 * t_min
+    )
+    return vo2 / pct
+
+
 def vdot_from_race(distance_m: float, time_s: float) -> float | None:
     """Jack Daniels' VDOT from a race distance (m) and time (s)."""
     if not distance_m or not time_s:
         return None
-    t = time_s / 60.0
-    v = distance_m / t  # m/min
-    vo2 = -4.60 + 0.182258 * v + 0.000104 * v * v
-    pct = 0.8 + 0.1894393 * math.exp(-0.012778 * t) + 0.2989558 * math.exp(
-        -0.1932605 * t
-    )
-    return round(vo2 / pct, 1)
+    return round(_vdot_for_velocity(distance_m, time_s / 60.0), 1)
+
+
+def predict_race_time(vdot: float, distance_m: float) -> int | None:
+    """Predicted race time (seconds) at ``distance_m`` for a given VDOT — the inverse of
+    ``vdot_from_race``.
+
+    VDOT decreases monotonically as time rises (same distance), so we bisect on time.
+    This is the "equivalent race performances across distances" idea behind Daniels'
+    VDOT tables (Table 5.1, *Daniels' Running Formula* 3rd ed.): one VDOT maps to a full
+    set of race times.
+    """
+    if not vdot or vdot <= 0 or not distance_m or distance_m <= 0:
+        return None
+    lo, hi = 2.0, 600.0  # minutes; brackets 5K..marathon for any realistic VDOT
+    for _ in range(100):
+        mid = (lo + hi) / 2.0
+        if _vdot_for_velocity(distance_m, mid) > vdot:
+            lo = mid  # too fast (VDOT too high) -> allow more time
+        else:
+            hi = mid
+    return round((lo + hi) / 2.0 * 60.0)
+
+
+def race_equivalent_times(vdot: float) -> dict[str, int]:
+    """Equivalent race times (seconds) at each standard distance for a VDOT.
+
+    Lets the coach answer "what does this fitness predict across distances?" — e.g. turn a
+    half result into a realistic marathon estimate (``RACE_METERS["Marathon"]``).
+    """
+    out: dict[str, int] = {}
+    for label, meters in RACE_METERS.items():
+        t = predict_race_time(vdot, meters)
+        if t is not None:
+            out[label] = t
+    return out
 
 
 # Most appropriate race for marathon-plan VDOT: a recent half is the gold standard,

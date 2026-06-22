@@ -10,7 +10,7 @@ reports), a **deterministic plan engine** (`engine/plan/`: Daniels 2Q + Pfitzing
 Saturday long run, primary + secondary marathons on the plan object), a **local SQLite
 store** with append-only events + `replan` / `monitor` glue, a typed **LLM boundary**
 (stub only — no live provider), and **Google Sheets** style harvest + plan tab publish
-(`render/style.py`, `render/sheets.py`). **Planned:** NYRR feed, full form→store merge.
+(`render/style.py`, `render/sheets.py`). **NYRR chip times:** `lib/data_feeds/nyrr.py`, `main.py nyrr-races`, `scripts/merge_report_nyrr_survey.py`. **Planned:** full form→store merge.
 
 ## Architecture and documentation
 
@@ -57,6 +57,36 @@ source .venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium
 ```
+
+## Kelly demo
+
+The sec.7 **Kelly** worked example from `tests/test_plan.py` is mirrored as
+[`tests/fixtures/survey_kelly.json`](tests/fixtures/survey_kelly.json). To run **build-plan → replan → monitor** on a throwaway SQLite DB with **empty** training JSONL (18 `AdherenceFlag` events — pipeline smoke test only):
+
+```bash
+source .venv/bin/activate
+python scripts/run_kelly_demo.py
+```
+
+**Use her real Strava history + club intake (local only):** read **Intake_responses** with
+`python main.py pull-intake --defaults tests/fixtures/survey_kelly.json --match-name Kelly --out /tmp/kelly_merged.json`
+(merge overlays the sheet onto the base JSON; replace the defaults file with Strava-filled JSON when you have it). Then, with your Strava session (`python main.py login`):
+
+```bash
+python scripts/run_kelly_demo.py --survey /tmp/kelly_merged.json --fetch-training --strava-id '<id_from_sheet_or_env>'
+```
+
+Or one shot from the sheet (uses the same defaults merge, then Strava id from the sheet column when omitted):
+
+```bash
+python scripts/run_kelly_demo.py --from-intake-sheet --match-name Kelly --fetch-training --defaults tests/fixtures/survey_kelly.json
+```
+
+That runs `main.py training` over a date window from the merged survey `race_date` / `block_weeks`, then `monitor`. To reuse JSONL you already scraped: add `--training output/marathon/training_<id>.jsonl` (omit `--fetch-training`).
+
+Add `--publish` for **`ingest-style`** + **`publish-sheet`** (Google token — [Google Sheets credentials](#google-sheets-credentials)).
+
+Pytest: `tests/test_kelly_pipeline.py`.
 
 ## 1. Log in (one time)
 
@@ -280,7 +310,7 @@ docs/
 requirements.txt
 ```
 
-Planned packages as they land: **feeds/nyrr/**, **feeds/forms/** (automated merge).
+Planned packages as they land: **feeds/forms/** (automated merge). NYRR lives under **lib/data_feeds/**.
 
 ## Google Sheets credentials
 

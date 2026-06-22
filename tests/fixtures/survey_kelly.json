@@ -1,0 +1,13 @@
+{
+  "name": "Kelly",
+  "vdot": 43,
+  "goal_marathon_s": 14100,
+  "w_now": 28.0,
+  "p_history": 31.0,
+  "longest_run_mi": 13.0,
+  "days_per_week": 4,
+  "race_date": "2026-10-10",
+  "block_weeks": 18,
+  "race_name": "Test Marathon",
+  "secondary_races": []
+}

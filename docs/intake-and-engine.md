@@ -2,13 +2,15 @@
 
 This document is the **source of truth** for how Zone 2 Track Club data flows from **Google Forms + Strava** into the deterministic **`engine/plan`** marathon builder, what is **required vs optional**, and how blanks are resolved.
 
+For the *reasoning layer* on top of these fields — fitness vs volume, VDOT freshness/breaks, re-entry starting volume, P/tier selection, method routing, and a worked Kelly example — see [`docs/architecture/athlete-readiness.md`](architecture/athlete-readiness.md).
+
 ---
 
 ## 1. Two layers
 
 | Layer | Role |
 |-------|------|
-| **Feeds / merge** | Strava scrape + NYRR (later) + Google Form row → one `AthleteInputs` instance. Parses times, picks primary marathon, sets `vdot`, `w_now`, `p_history`, etc. *Not fully implemented in repo yet — this doc defines the contract.* |
+| **Feeds / merge** | Strava scrape + **NYRR chip times** (optional) + Google Form row → one `AthleteInputs` instance. **Partial:** [`store/intake_sheet.py`](../../store/intake_sheet.py) + `main.py pull-intake` reads the `Intake` tab into `SurveyInputs` (overlay on a defaults JSON). Official NYRR times: [`lib/data_feeds/nyrr.py`](../../lib/data_feeds/nyrr.py) + `main.py nyrr-races`, merged with Strava report numerics via [`scripts/merge_report_nyrr_survey.py`](../../scripts/merge_report_nyrr_survey.py). Full Strava↔sheet merge for every field is still coach-driven where not scripted. |
 | **Engine** | `build_plan(AthleteInputs) -> TrainingPlan`. Pure math from the Training Plan Formula Reference (Daniels / Pfitzinger). **No LLM** in the numeric path. |
 
 Canonical code:

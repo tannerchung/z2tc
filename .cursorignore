@@ -24,3 +24,10 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Allow reading the reference-book page images (added for table interpretation; still
+# git-ignored as copyrighted, just not hidden from the editor/agent).
+!Marathon, Revised and Updated_ The Ultimat - Hal Higdon/**
+!Hansons Marathon Method - Luke Humphrey/**
+!Advanced Marathoning - Pfitzinger, Pete/**
+!Daniels-running-formula/**

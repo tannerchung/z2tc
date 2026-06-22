@@ -12,7 +12,7 @@ The engine contract is `AthleteInputs` in [`engine/plan/models.py`](../../engine
 
 - [`store/models.py`](../../store/models.py) — `SurveyInputs` (Pydantic) mirrors the engine-facing fields plus optional intake extras; `to_athlete_inputs()` drops unknown keys and builds `AthleteInputs`.
 - [`store/db.py`](../../store/db.py) — default DB path `output/z2tc.db` (anchored to repo root): `athletes`, `survey_baselines`, `plan_artifacts`, `events`.
-- [`store/events.py`](../../store/events.py) — discriminated payloads (`Injury`, `SetDays`, `AdherenceFlag`, …) and `parse_event_payload(dict)` for JSON rows. Contract vs engine rules: [`docs/architecture/event-sourcing.md`](../architecture/event-sourcing.md).
+- [`store/intake_sheet.py`](../../store/intake_sheet.py) — read **Intake_responses** via Sheets API → merge with defaults → `SurveyInputs`; used by `main.py pull-intake`.
 
 ## Outputs: `TrainingPlan` tree
 

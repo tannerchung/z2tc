@@ -86,17 +86,18 @@ Today, **merge** (Sheet + Strava → one `AthleteInputs`) is specified in `docs/
 
 - Strava: saved session, profile scrape, ISO-week training reconstruction.
 - `analyze`, `marathon-report` over `training.jsonl`-shaped data.
-- Deterministic `build_plan` (Daniels / Pfitzinger), `resolve_intake_defaults`, golden tests.
+- Deterministic `build_plan` (Daniels / Pfitzinger / Higdon), `resolve_intake_defaults`, regression tests.
 - **Second-stage MVP:** `store/` (SQLite + Pydantic), append-only `store/events.py`, `replan()`, `monitor_block()`, typed `llm/boundary.py` (stub extractor), `render/style.py` + `render/sheets.py`, and `main.py` subcommands `ingest-style`, `build-plan`, `replan`, `monitor`, `publish-sheet`.
+- NYRR official results: `lib/data_feeds/nyrr.py`, `main.py nyrr-races`, and `scripts/merge_report_nyrr_survey.py` (chip times → `SurveyInputs` / VDOT with Strava `marathon-report`).
 
 **Planned / partial**
 
-- `feeds/nyrr/`, `feeds/forms/` — additional feeds (not wired).
 - Full **form → store** automation (today: `build-plan --survey` loads JSON you author or export).
 
 ## Related docs
 
 - [event-sourcing.md](event-sourcing.md) — event vocabulary ↔ engine rules.
+- [interpretation-layer.md](interpretation-layer.md) — coach/LLM interpretation as events (design).
 - [plan-engine.md](plan-engine.md) — dispatch, formulas, generators, tests.
 - [feeds-and-analysis.md](feeds-and-analysis.md) — scrape + analyze pipeline.
 - [Intake vs engine (canonical)](../intake-and-engine.md)

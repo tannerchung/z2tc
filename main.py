@@ -4,9 +4,14 @@ Usage:
     python main.py login                       # one-time manual login (headed)
     python main.py scrape 12345 67890          # scrape one or more athlete IDs
     python main.py ingest-style                # harvest club workbook style (Sheets API)
+    python main.py pull-intake --defaults …    # club Intake tab → SurveyInputs JSON
+    python main.py nyrr-races --search "…"     # NYRR chip times (results.nyrr.org API)
     python main.py build-plan <id> --survey …  # baseline → plan artifact in SQLite
     python main.py replan <id>                 # fold events → new plan artifact
     python main.py monitor <id> --training …  # Strava weekly totals → monitor events
+    python main.py propose-notes <id> --text "…"  # coach note + LLM proposed events
+    python main.py interpret-activities <id> --training PATH  # Strava text → proposed events
+    python main.py review <id>               # approve/reject proposed events; optional replan
     python main.py publish-sheet <id>          # latest plan → Google Sheet tab
 """
 
@@ -14,8 +19,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -37,7 +43,7 @@ from engine.analyze import (
 from engine.monitor import monitor_block
 from engine.plan import build_plan
 from engine.plan.replan import replan
-from llm.boundary import StyleSpec
+from llm.boundary import StyleSpec, date_window, extract_events, payload_out_of_window_fields
 from render.sheets import render_plan
 from render.style import (
     default_club_spreadsheet_id,
@@ -45,7 +51,16 @@ from render.style import (
     harvest_workbook_style,
 )
 from store.db import Store, default_db_path, fingerprint_athlete_inputs
-from store.events import EventRecord, event_type_name
+from store.events import (
+    CoachNotePayload,
+    DataExcludePayload,
+    EffortQualityPayload,
+    EventRecord,
+    FitnessAnchorPayload,
+    RaceEstimatePayload,
+    event_type_name,
+    parse_event_payload,
+)
 from store.models import Athlete, SurveyInputs
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -54,6 +69,21 @@ DEFAULT_OUTPUT = PROJECT_ROOT / "output" / "athletes.jsonl"
 
 def _parse_date(value: str) -> date:
     return datetime.strptime(value, "%Y-%m-%d").date()
+
+
+def _parse_hms(value: str) -> int:
+    """Parse 'H:MM:SS' or 'MM:SS' into seconds."""
+    parts = [int(p) for p in value.split(":")]
+    if len(parts) == 3:
+        h, m, s = parts
+    elif len(parts) == 2:
+        h, m, s = 0, parts[0], parts[1]
+    else:
+        raise argparse.ArgumentTypeError(f"expected H:MM:SS or MM:SS, got {value!r}")
+    return h * 3600 + m * 60 + s
+
+
+_DISTANCE_CHOICES = {"5k": "5K", "10k": "10K", "half": "Half Marathon", "marathon": "Marathon"}
 
 
 def _cmd_login(args: argparse.Namespace) -> int:
@@ -394,6 +424,346 @@ def _cmd_monitor(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_coach_note(args: argparse.Namespace) -> int:
+    """Append a coach observation, or an effort-corrected race estimate, to the event log.
+
+    A plain ``--text`` note is provenance only. A race estimate (``--race-name`` +
+    ``--estimated-time``) computes the trained-peak VDOT the effort really showed and detrains
+    it to today (Daniels Table 15.1) so the next ``replan`` folds it into the athlete's VDOT.
+    """
+    from engine import readiness as rd
+    from engine.vdot import RACE_METERS, vdot_from_race
+
+    store = _open_store(args)
+
+    if args.race_name:
+        if not args.distance or not args.estimated_time:
+            print("Race estimate needs --distance and --estimated-time.", file=sys.stderr)
+            return 1
+        dist_m = RACE_METERS[_DISTANCE_CHOICES[args.distance]]
+        est_vdot = vdot_from_race(dist_m, args.estimated_time)
+        if est_vdot is None:
+            print("Could not compute VDOT for that distance/time.", file=sys.stderr)
+            return 1
+
+        break_days = args.break_days
+        if break_days is None:
+            baseline = store.load_survey_baseline(args.athlete_id)
+            break_days = int(getattr(baseline, "recent_break_days", None) or 0) if baseline else 0
+        eff_vdot = rd.adjusted_vdot(est_vdot, break_days, args.cross_trained)
+
+        payload = RaceEstimatePayload(
+            race_name=args.race_name,
+            race_date=args.race_date.isoformat() if args.race_date else "",
+            distance_m=dist_m,
+            actual_time_s=args.actual_time,
+            estimated_time_s=args.estimated_time,
+            estimated_vdot=est_vdot,
+            effective_vdot=eff_vdot,
+            break_days=break_days,
+            note=args.text or "",
+        )
+        store.append_event_record(
+            EventRecord(athlete_id=args.athlete_id, source="coach", status="applied", payload=payload)
+        )
+        print(
+            f"Recorded race-estimate for {args.athlete_id}: {args.race_name} "
+            f"@ {args.estimated_time}s → trained VDOT {est_vdot}, "
+            f"detrained {break_days}d → effective VDOT {eff_vdot}.\n"
+            f"Run `python main.py replan {args.athlete_id}` to apply it."
+        )
+        return 0
+
+    if not args.text:
+        print("Provide --text, or a race estimate (--race-name --distance --estimated-time).", file=sys.stderr)
+        return 1
+    store.append_event_record(
+        EventRecord(
+            athlete_id=args.athlete_id,
+            source="coach",
+            status="applied",
+            payload=CoachNotePayload(text=args.text, tags=args.tag or []),
+        )
+    )
+    print(f"Recorded coach note for {args.athlete_id}.")
+    return 0
+
+
+def _cmd_propose_notes(args: argparse.Namespace) -> int:
+    """Append raw coach text as an applied CoachNote, then NL-extract proposed events."""
+    store = _open_store(args)
+    text = (args.text or "").strip()
+    if args.file:
+        fp = Path(args.file)
+        if not fp.exists():
+            print(f"No file at {fp}", file=sys.stderr)
+            return 1
+        try:
+            text = fp.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            print(f"Could not read file: {exc}", file=sys.stderr)
+            return 1
+    if not text:
+        print("Provide --text or --file with non-empty content.", file=sys.stderr)
+        return 1
+
+    baseline = store.load_survey_baseline(args.athlete_id)
+    break_days = int(getattr(baseline, "recent_break_days", None) or 0) if baseline else 0
+    cross = bool(getattr(baseline, "cross_trained_during_break", False)) if baseline else False
+
+    tags = list(args.tag or [])
+    note_ev = EventRecord(
+        athlete_id=args.athlete_id,
+        source="coach",
+        status="applied",
+        payload=CoachNotePayload(text=text, tags=tags),
+    )
+    store.append_event_record(note_ev)
+    proposed = extract_events(
+        text,
+        athlete_id=args.athlete_id,
+        break_days=break_days,
+        cross_trained=cross,
+        race_date=getattr(baseline, "race_date", None) if baseline else None,
+        block_weeks=getattr(baseline, "block_weeks", None) if baseline else None,
+    )
+    for ev in proposed:
+        store.append_event_record(ev)
+        print(f"  proposed {event_type_name(ev.payload)}: {ev.payload.model_dump_json()}")
+    print(
+        f"Recorded coach note {note_ev.id} + {len(proposed)} proposed event(s) for "
+        f"{args.athlete_id}. Run `python main.py review {args.athlete_id}` to approve."
+    )
+    return 0
+
+
+def _cmd_interpret_activities(args: argparse.Namespace) -> int:
+    """Scan training.jsonl for activities with substantive titles/descriptions; propose events."""
+    store = _open_store(args)
+    tpath = Path(args.training)
+    if not tpath.exists():
+        print(f"No training file at {tpath}", file=sys.stderr)
+        return 1
+    try:
+        weeks = load_weeks(tpath)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"Could not load training JSONL: {exc}", file=sys.stderr)
+        return 1
+
+    baseline = store.load_survey_baseline(args.athlete_id)
+    break_days = int(getattr(baseline, "recent_break_days", None) or 0) if baseline else 0
+    cross = bool(getattr(baseline, "cross_trained_during_break", False)) if baseline else False
+
+    weeks_sorted = sorted(weeks, key=lambda w: str(w.get("week_start") or ""))
+    n_weeks = max(1, int(args.weeks))
+    picked = weeks_sorted[-n_weeks:] if weeks_sorted else []
+    min_chars = max(1, int(args.min_chars))
+
+    n_notes = 0
+    n_props = 0
+    for week in picked:
+        for w in week.get("workouts") or []:
+            name = str(w.get("name") or "").strip()
+            desc = str(w.get("description") or "").strip()
+            blob = f"{name}\n{desc}".strip()
+            if len(blob) < min_chars:
+                continue
+            day = (w.get("start_date") or "")[:10]
+            aid = str(w.get("activity_id") or "")
+            url = str(w.get("url") or "")
+            body = f"[Strava activity {day}] id={aid}\n{name}\n{desc}\n{url}".strip()
+            tags = ["strava_activity"]
+            if aid:
+                tags.append(f"activity_id:{aid}")
+            note_ev = EventRecord(
+                athlete_id=args.athlete_id,
+                source="strava",
+                status="applied",
+                payload=CoachNotePayload(text=body, tags=tags),
+            )
+            store.append_event_record(note_ev)
+            n_notes += 1
+            proposed = extract_events(
+                body,
+                athlete_id=args.athlete_id,
+                break_days=break_days,
+                cross_trained=cross,
+                race_date=getattr(baseline, "race_date", None) if baseline else None,
+                block_weeks=getattr(baseline, "block_weeks", None) if baseline else None,
+            )
+            for ev in proposed:
+                store.append_event_record(ev)
+                print(f"  proposed {event_type_name(ev.payload)}: {ev.payload.model_dump_json()}")
+                n_props += 1
+    print(
+        f"Recorded {n_notes} activity note(s) + {n_props} proposed event(s) for "
+        f"{args.athlete_id}. Run `python main.py review {args.athlete_id}` to approve."
+    )
+    return 0
+
+
+def _cmd_review(args: argparse.Namespace) -> int:
+    """Interactive approval for proposed events; optional replan after any approval."""
+    store = _open_store(args)
+    rows = store.list_events(args.athlete_id, status="proposed")
+    if not rows:
+        print(f"No proposed events for {args.athlete_id}.")
+        return 0
+
+    survey = store.load_survey_baseline(args.athlete_id)
+    today_utc = datetime.now(timezone.utc).date()
+    window: tuple[date, date] | None = None
+    if survey is not None:
+        window = date_window(
+            today_utc,
+            getattr(survey, "race_date", None),
+            getattr(survey, "block_weeks", None),
+        )
+
+    auto = (os.environ.get("Z2TC_REVIEW_AUTO") or "").strip().lower() == "all"
+    approved_any = False
+    for row in rows:
+        eid = row["id"]
+        try:
+            payload = parse_event_payload(json.loads(row["payload_json"]))
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(f"[skip bad payload] {eid}: {exc}", file=sys.stderr)
+            continue
+        print(f"\n--- Proposed {eid} ({row['event_type']}) ---")
+        print(payload.model_dump_json(indent=2))
+        if window is not None:
+            lo, hi = window
+            for field_name, raw in payload_out_of_window_fields(payload, window):
+                print(
+                    f"  !! date warning: {field_name}={raw} is outside the plausible block window "
+                    f"{lo.isoformat()}..{hi.isoformat()} - verify before approving."
+                )
+        if args.yes_all or auto:
+            choice = "a"
+        else:
+            choice = (input("[A]pprove, [R]eject, [S]kip? ").strip() or "s").lower()[:1]
+        if choice == "a":
+            store.update_event_status(eid, "approved")
+            approved_any = True
+            print("  -> approved")
+        elif choice == "r":
+            store.update_event_status(eid, "rejected")
+            print("  -> rejected")
+        else:
+            print("  -> skipped (still proposed)")
+
+    if approved_any and not args.no_replan:
+        if not survey:
+            print("No survey baseline; cannot replan.", file=sys.stderr)
+            return 1
+        baseline = survey.to_athlete_inputs()
+        plan = replan(baseline, store, args.athlete_id)
+        nevents = len(store.list_events(args.athlete_id))
+        fp = fingerprint_athlete_inputs(baseline) + f"_e{nevents}"
+        pid = store.save_plan_artifact(args.athlete_id, plan, fp)
+        print(f"Saved replan artifact {pid} after approvals.")
+    return 0
+
+
+def _cmd_mark_race(args: argparse.Namespace) -> int:
+    """Tag a race's effort quality and/or exclude it from fitness/volume reads (directives)."""
+    store = _open_store(args)
+    if not args.quality and not args.exclude:
+        print("Provide --quality and/or --exclude.", file=sys.stderr)
+        return 1
+    if args.quality:
+        store.append_event_record(EventRecord(
+            athlete_id=args.athlete_id, source="coach", status="applied",
+            payload=EffortQualityPayload(race_date=args.race_date.isoformat(), quality=args.quality, note=args.note or ""),
+        ))
+        print(f"Tagged {args.race_date} effort={args.quality} for {args.athlete_id}.")
+    if args.exclude:
+        store.append_event_record(EventRecord(
+            athlete_id=args.athlete_id, source="coach", status="applied",
+            payload=DataExcludePayload(race_date=args.race_date.isoformat(), reason=args.note or ""),
+        ))
+        print(f"Excluded {args.race_date} from reads for {args.athlete_id}.")
+    return 0
+
+
+def _cmd_fitness_select(args: argparse.Namespace) -> int:
+    """Resolve which race sets fitness from candidate races + recorded directives, detrain it,
+    and (``--apply``) write a FitnessAnchor the next ``replan`` folds into ``vdot``."""
+    from engine import readiness as rd
+    from store.events import parse_event_payload
+
+    store = _open_store(args)
+
+    report_path = Path(args.report) if args.report else None
+    if report_path is None:
+        ath = store.get_athlete(args.athlete_id)
+        sid = args.strava_id or (ath.strava_athlete_id if ath else None)
+        if not sid:
+            print("No --report and no Strava id on file; pass --report PATH.", file=sys.stderr)
+            return 1
+        report_path = PROJECT_ROOT / "output" / "marathon" / f"report_{sid}.json"
+    if not report_path.exists():
+        print(f"No report at {report_path}", file=sys.stderr)
+        return 1
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"Could not read report: {exc}", file=sys.stderr)
+        return 1
+    races = report.get("all_races_detected") or []
+
+    excluded: set[str] = set()
+    effort: dict[str, str] = {}
+    overrides: dict[str, int] = {}
+    anchor = args.anchor_date.isoformat() if args.anchor_date else None
+    for row in store.list_events(args.athlete_id):
+        if row["status"] in ("proposed", "rejected"):
+            continue
+        try:
+            p = parse_event_payload(json.loads(row["payload_json"]))
+        except (ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(p, DataExcludePayload):
+            excluded.add(p.race_date)
+        elif isinstance(p, EffortQualityPayload):
+            effort[p.race_date] = p.quality
+        elif isinstance(p, RaceEstimatePayload):
+            overrides[p.race_date] = p.estimated_time_s
+        elif isinstance(p, FitnessAnchorPayload) and anchor is None and p.race_date:
+            anchor = p.race_date
+
+    baseline = store.load_survey_baseline(args.athlete_id)
+    break_days = args.break_days
+    if break_days is None:
+        break_days = int(getattr(baseline, "recent_break_days", None) or 0) if baseline else 0
+    cross = bool(getattr(baseline, "cross_trained_during_break", False)) if baseline else False
+
+    sel = rd.select_fitness_vdot(
+        races, excluded_dates=excluded, effort_quality=effort, time_overrides=overrides,
+        anchor_date=anchor, break_days=break_days, cross_trained=cross,
+    )
+    print(f"Considered: {', '.join(sel.considered) or '(none)'}")
+    for d in sel.dropped:
+        print(f"  dropped: {d}")
+    for n in sel.notes:
+        print(f"  note: {n}")
+    if sel.effective_vdot is None:
+        print("No eligible race — record a RaceEstimate or relax a directive.", file=sys.stderr)
+        return 1
+    print(f"→ {sel.source}: race VDOT {sel.race_vdot} → effective VDOT {sel.effective_vdot}")
+
+    if args.apply:
+        store.append_event_record(EventRecord(
+            athlete_id=args.athlete_id, source="coach", status="applied",
+            payload=FitnessAnchorPayload(
+                race_date=sel.chosen_date, vdot=sel.effective_vdot, source=sel.source,
+                note="resolved by fitness-select",
+            ),
+        ))
+        print(f"Applied FitnessAnchor (VDOT {sel.effective_vdot}). Run `python main.py replan {args.athlete_id}`.")
+    return 0
+
+
 def _cmd_publish_sheet(args: argparse.Namespace) -> int:
     bundle_path = Path(args.style_bundle)
     if not bundle_path.exists():
@@ -422,6 +792,71 @@ def _cmd_publish_sheet(args: argparse.Namespace) -> int:
         sheet_title=args.sheet_title,
     )
     print(json.dumps(meta, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _cmd_pull_intake(args: argparse.Namespace) -> int:
+    from store.intake_sheet import pull_survey_for_athlete
+
+    if not args.match_name and not args.match_strava_id:
+        print("Provide --match-name and/or --match-strava-id.", file=sys.stderr)
+        return 1
+    defaults_path = Path(args.defaults)
+    if not defaults_path.exists():
+        print(f"Missing --defaults file: {defaults_path}", file=sys.stderr)
+        return 1
+    try:
+        defaults = SurveyInputs.model_validate_json(
+            defaults_path.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError, ValidationError) as exc:
+        print(f"Invalid defaults JSON: {exc}", file=sys.stderr)
+        return 1
+    ss_id = args.spreadsheet_id or default_club_spreadsheet_id()
+    try:
+        survey, strava_id, row = pull_survey_for_athlete(
+            defaults=defaults,
+            spreadsheet_id=ss_id,
+            tab=args.tab,
+            match_name=args.match_name or None,
+            match_strava_id=args.match_strava_id or None,
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    body = survey.model_dump_json(indent=2)
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(body, encoding="utf-8")
+        print(f"Wrote {out_path} (sheet row {row})", file=sys.stderr)
+    else:
+        print(body)
+    if strava_id:
+        print(f"# Strava athlete id: {strava_id}", file=sys.stderr)
+    return 0
+
+
+def _cmd_nyrr_races(args: argparse.Namespace) -> int:
+    from dataclasses import asdict
+
+    from lib.data_feeds.nyrr import list_chip_races_for_search
+
+    try:
+        rid, rows = list_chip_races_for_search(
+            args.search,
+            exclude_virtual=not args.include_virtual,
+        )
+    except (LookupError, OSError, RuntimeError) as exc:
+        print(f"NYRR: {exc}", file=sys.stderr)
+        return 1
+    print(
+        json.dumps(
+            {"runner_id": rid, "races": [asdict(r) for r in rows]},
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 
@@ -590,6 +1025,59 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_style.set_defaults(func=_cmd_ingest_style)
 
+    p_pull = sub.add_parser(
+        "pull-intake",
+        help="Read club Intake tab → merged SurveyInputs JSON (Sheets API).",
+    )
+    p_pull.add_argument(
+        "--defaults",
+        required=True,
+        type=Path,
+        help="Base SurveyInputs JSON; non-empty sheet cells overlay (use Strava/numeric fill).",
+    )
+    p_pull.add_argument(
+        "--match-name",
+        default=None,
+        help="Substring match on the athlete full_name column.",
+    )
+    p_pull.add_argument(
+        "--match-strava-id",
+        default=None,
+        help="Exact Strava athlete id parsed from the strava column.",
+    )
+    p_pull.add_argument(
+        "--tab",
+        default="Intake",
+        help="Linked Form responses tab name (default Intake).",
+    )
+    p_pull.add_argument(
+        "--spreadsheet-id",
+        default=None,
+        help="Workbook id (default club workbook or Z2TC_CLUB_SPREADSHEET_ID).",
+    )
+    p_pull.add_argument(
+        "--out",
+        default=None,
+        help="Write JSON to this path (default: print to stdout).",
+    )
+    p_pull.set_defaults(func=_cmd_pull_intake)
+
+    p_nyrr = sub.add_parser(
+        "nyrr-races",
+        help="Look up official NYRR chip times (public RMS API used by results.nyrr.org).",
+    )
+    p_nyrr.add_argument(
+        "--search",
+        required=True,
+        help='Runner name text (same box as the site), e.g. "Kelly Hession".',
+    )
+    p_nyrr.add_argument(
+        "--include-virtual",
+        action="store_true",
+        help="Include NYRR Virtual* events in the race list.",
+    )
+    p_nyrr.set_defaults(func=_cmd_nyrr_races)
+
     p_bp = sub.add_parser(
         "build-plan",
         help="Persist survey baseline, run build_plan, save PlanArtifact to SQLite.",
@@ -643,6 +1131,119 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"SQLite path (default: {default_db_path()}).",
     )
     p_mon.set_defaults(func=_cmd_monitor)
+
+    p_cn = sub.add_parser(
+        "coach-note",
+        help="Append a coach note, or an effort-corrected race estimate, to the event log.",
+    )
+    p_cn.add_argument("athlete_id")
+    p_cn.add_argument("--text", default=None, help="Free-text coach note / estimate rationale.")
+    p_cn.add_argument("--tag", action="append", help="Optional tag (repeatable).")
+    p_cn.add_argument("--race-name", dest="race_name", default=None, help="Name of the race being estimated.")
+    p_cn.add_argument("--race-date", dest="race_date", type=_parse_date, default=None, help="Race date YYYY-MM-DD.")
+    p_cn.add_argument(
+        "--distance", choices=sorted(_DISTANCE_CHOICES), default=None,
+        help="Race distance for the estimate.",
+    )
+    p_cn.add_argument(
+        "--estimated-time", dest="estimated_time", type=_parse_hms, default=None,
+        help="Coach's effort-corrected finish time (H:MM:SS).",
+    )
+    p_cn.add_argument(
+        "--actual-time", dest="actual_time", type=_parse_hms, default=None,
+        help="As-recorded finish time (H:MM:SS), optional.",
+    )
+    p_cn.add_argument(
+        "--break-days", dest="break_days", type=int, default=None,
+        help="Days off used to detrain the estimate (default: athlete's recent_break_days).",
+    )
+    p_cn.add_argument(
+        "--cross-trained", dest="cross_trained", action="store_true",
+        help="Leg-aerobic cross-training during the break (FVDOT-2, smaller loss).",
+    )
+    p_cn.add_argument("--db", default=None, help=f"SQLite path (default: {default_db_path()}).")
+    p_cn.set_defaults(func=_cmd_coach_note)
+
+    p_pn = sub.add_parser(
+        "propose-notes",
+        help="Store raw coach text as a CoachNote; append LLM-proposed events (status=proposed).",
+    )
+    p_pn.add_argument("athlete_id")
+    p_pn.add_argument("--text", default=None, help="Raw coach note (otherwise use --file).")
+    p_pn.add_argument("--file", type=Path, default=None, help="Path to UTF-8 text file.")
+    p_pn.add_argument("--tag", action="append", help="Optional tag on the CoachNote (repeatable).")
+    p_pn.add_argument("--db", default=None, help=f"SQLite path (default: {default_db_path()}).")
+    p_pn.set_defaults(func=_cmd_propose_notes)
+
+    p_ia = sub.add_parser(
+        "interpret-activities",
+        help="Scan training.jsonl for long titles/descriptions; CoachNote + proposed events.",
+    )
+    p_ia.add_argument("athlete_id")
+    p_ia.add_argument(
+        "--training",
+        required=True,
+        type=Path,
+        help="training.jsonl path (e.g. output/marathon/training_<id>.jsonl).",
+    )
+    p_ia.add_argument(
+        "--weeks",
+        type=int,
+        default=4,
+        help="How many trailing ISO weeks to scan (default 4).",
+    )
+    p_ia.add_argument(
+        "--min-chars",
+        dest="min_chars",
+        type=int,
+        default=40,
+        help="Minimum combined title+description length (default 40).",
+    )
+    p_ia.add_argument("--db", default=None, help=f"SQLite path (default: {default_db_path()}).")
+    p_ia.set_defaults(func=_cmd_interpret_activities)
+
+    p_rev = sub.add_parser(
+        "review",
+        help="Review proposed events: approve/reject; replan when anything approved.",
+    )
+    p_rev.add_argument("athlete_id")
+    p_rev.add_argument(
+        "--yes-all",
+        action="store_true",
+        help="Approve all proposed events without prompting.",
+    )
+    p_rev.add_argument(
+        "--no-replan",
+        action="store_true",
+        help="Do not save a new plan artifact after approvals.",
+    )
+    p_rev.add_argument("--db", default=None, help=f"SQLite path (default: {default_db_path()}).")
+    p_rev.set_defaults(func=_cmd_review)
+
+    p_mr2 = sub.add_parser(
+        "mark-race",
+        help="Tag a race's effort quality (max/submaximal/compromised) and/or exclude it.",
+    )
+    p_mr2.add_argument("athlete_id")
+    p_mr2.add_argument("--race-date", dest="race_date", type=_parse_date, required=True, help="Race date YYYY-MM-DD.")
+    p_mr2.add_argument("--quality", choices=["max", "submaximal", "compromised"], default=None)
+    p_mr2.add_argument("--exclude", action="store_true", help="Exclude this race from fitness/volume reads.")
+    p_mr2.add_argument("--note", default=None, help="Reason / context.")
+    p_mr2.add_argument("--db", default=None, help=f"SQLite path (default: {default_db_path()}).")
+    p_mr2.set_defaults(func=_cmd_mark_race)
+
+    p_fs = sub.add_parser(
+        "fitness-select",
+        help="Resolve the fitness VDOT from candidate races + directives; --apply writes a FitnessAnchor.",
+    )
+    p_fs.add_argument("athlete_id")
+    p_fs.add_argument("--report", default=None, help="Marathon report JSON (default: output/marathon/report_<strava-id>.json).")
+    p_fs.add_argument("--strava-id", dest="strava_id", default=None, help="Strava id to locate the default report.")
+    p_fs.add_argument("--anchor-date", dest="anchor_date", type=_parse_date, default=None, help="Pin this race date as the fitness source.")
+    p_fs.add_argument("--break-days", dest="break_days", type=int, default=None, help="Override detraining days (default: athlete's recent_break_days).")
+    p_fs.add_argument("--apply", action="store_true", help="Write the resolved FitnessAnchor event.")
+    p_fs.add_argument("--db", default=None, help=f"SQLite path (default: {default_db_path()}).")
+    p_fs.set_defaults(func=_cmd_fitness_select)
 
     p_pub = sub.add_parser(
         "publish-sheet",

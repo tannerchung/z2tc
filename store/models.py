@@ -28,9 +28,19 @@ class SurveyInputs(BaseModel):
     days_per_week: int
     race_date: str
     injury_prone: bool = False
+    recent_break_days: int | None = None
+    cross_trained_during_break: bool = False
+    cross_training_note: str | None = None
     method: str | None = None
     block_weeks: int = 18
     race_name: str = "Marathon"
+    coach_floor_mpw: float | None = None
+    coach_target_mpw: float | None = None
+    higdon_program: str | None = None
+    hanson_program: str | None = None
+    append_post_marathon_recovery: bool = False
+    emit_peak_scenarios: bool = False
+    easy_pace_override_s: int | None = None
     secondary_races: list[MarathonRaceIn] = Field(default_factory=list)
     email: str | None = None
     birthday: str | None = None

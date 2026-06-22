@@ -11,7 +11,11 @@ from engine.plan.models import AthleteInputs, TrainingPlan
 
 from store.events import (
     AdherenceFlagPayload,
+    CoachNotePayload,
+    DataExcludePayload,
     DifficultyPayload,
+    EffortQualityPayload,
+    FitnessAnchorPayload,
     EasyPaceDriftPayload,
     FatigueFlagPayload,
     InjuryPayload,
@@ -19,11 +23,13 @@ from store.events import (
     ManualOverridePayload,
     MissedQualityPayload,
     OverreachFlagPayload,
+    RaceEstimatePayload,
     SetDaysPayload,
     SetGoalPayload,
     SetRaceDatePayload,
     TuneUpResultPayload,
     UnavailablePayload,
+    WeeklyEvaluationPayload,
     parse_event_payload,
 )
 
@@ -50,6 +56,10 @@ def _apply_payload(inputs: AthleteInputs, payload: Any) -> AthleteInputs:
         return replace(inputs, race_date=payload.race_date)
     if isinstance(payload, TuneUpResultPayload):
         return replace(inputs, vdot=payload.new_vdot)
+    if isinstance(payload, RaceEstimatePayload):
+        return replace(inputs, vdot=payload.effective_vdot)
+    if isinstance(payload, FitnessAnchorPayload):
+        return replace(inputs, vdot=payload.vdot) if payload.vdot is not None else inputs
     if isinstance(payload, InjuryPayload):
         return replace(inputs, injury_prone=True)
     if isinstance(payload, DifficultyPayload):
@@ -62,6 +72,17 @@ def _apply_payload(inputs: AthleteInputs, payload: Any) -> AthleteInputs:
         return replace(inputs, **{payload.field: payload.value})
     if isinstance(payload, UnavailablePayload):
         return inputs
+    if isinstance(payload, WeeklyEvaluationPayload):
+        updates: dict[str, object] = {}
+        if payload.calibrated_vdot is not None:
+            updates["vdot"] = round(float(payload.calibrated_vdot), 1)
+        if payload.estimated_mpw is not None:
+            mpw = round(float(payload.estimated_mpw), 1)
+            updates["w_now"] = mpw
+            updates["reentry_start_mpw"] = mpw
+        if payload.easy_pace_override_s is not None:
+            updates["easy_pace_override_s"] = int(payload.easy_pace_override_s)
+        return replace(inputs, **updates) if updates else inputs
     if isinstance(
         payload,
         (
@@ -71,18 +92,21 @@ def _apply_payload(inputs: AthleteInputs, payload: Any) -> AthleteInputs:
             LongRunIncompletePayload,
             FatigueFlagPayload,
             OverreachFlagPayload,
+            CoachNotePayload,
+            EffortQualityPayload,
+            DataExcludePayload,
         ),
     ):
         return inputs
     return inputs
 
 
-def replan(baseline: AthleteInputs, store: Store, athlete_id: str) -> TrainingPlan:
-    """Load events for ``athlete_id``, fold into baseline, ``build_plan``."""
+def fold_events_to_inputs(baseline: AthleteInputs, store: Store, athlete_id: str) -> tuple[AthleteInputs, list[str]]:
+    """Apply approved/applied events to ``baseline``; return working inputs + provenance flags."""
     rows = store.list_events(athlete_id)
     parsed: list[tuple[str, Any]] = []
     for r in rows:
-        if r["status"] == "proposed":
+        if r["status"] == "proposed" or r["status"] == "rejected":
             continue
         parsed.append((r["ts"], _parse_payload_json(r["payload_json"])))
     parsed.sort(key=lambda x: x[0])
@@ -95,8 +119,55 @@ def replan(baseline: AthleteInputs, store: Store, athlete_id: str) -> TrainingPl
                 "(week reshuffle not automated in MVP)"
             )
             continue
+        if isinstance(payload, InjuryPayload):
+            extra_flags.append(
+                "replan_note: injury / time-off — after 3–4 days missed, ease back slowly (Hanson p.145); "
+                "longer layoffs: Daniels Table 15.2 return bands (33/50/75% prior volume) before full load."
+            )
+            continue
+        if isinstance(payload, MissedQualityPayload):
+            extra_flags.append(
+                f"replan_note: missed quality wk{payload.week_index} {payload.day} ({payload.expected_label}) — "
+                "do not silently redistribute; repeat or slide when coach approves."
+            )
+            continue
+        if isinstance(payload, CoachNotePayload):
+            extra_flags.append(f"coach_note: {payload.text}")
+            continue
+        if isinstance(payload, EffortQualityPayload):
+            extra_flags.append(f"coach_note: {payload.race_date} effort={payload.quality}")
+            continue
+        if isinstance(payload, DataExcludePayload):
+            extra_flags.append(f"coach_note: exclude {payload.race_date} ({payload.reason})")
+            continue
+        if isinstance(payload, RaceEstimatePayload):
+            extra_flags.append(
+                f"coach_note: race-estimate {payload.race_name} "
+                f"→ effective VDOT {payload.effective_vdot}"
+                + (f" ({payload.note})" if payload.note else "")
+            )
+        if isinstance(payload, FitnessAnchorPayload):
+            extra_flags.append(
+                f"coach_note: fitness-anchor → VDOT {payload.vdot}"
+                + (f" [{payload.source}]" if payload.source else "")
+            )
+        if isinstance(payload, WeeklyEvaluationPayload):
+            parts = [f"week={payload.week_start}"]
+            if payload.calibrated_vdot is not None:
+                parts.append(f"vdot={payload.calibrated_vdot}")
+            if payload.estimated_mpw is not None:
+                parts.append(f"mpw={payload.estimated_mpw}")
+            if payload.easy_pace_override_s is not None:
+                parts.append(f"easy_s/mi={payload.easy_pace_override_s}")
+            tail = f" ({payload.note})" if payload.note else ""
+            extra_flags.append("coach_note: weekly-evaluation " + " ".join(parts) + tail)
         cur = _apply_payload(cur, payload)
+    return cur, extra_flags
 
+
+def replan(baseline: AthleteInputs, store: Store, athlete_id: str) -> TrainingPlan:
+    """Load events for ``athlete_id``, fold into baseline, ``build_plan``."""
+    cur, extra_flags = fold_events_to_inputs(baseline, store, athlete_id)
     plan = build_plan(cur)
     plan.flags = list(plan.flags) + extra_flags
     return plan

@@ -6,7 +6,15 @@ from dataclasses import asdict, is_dataclass
 from enum import Enum
 from typing import Any
 
-from engine.plan.models import PlannedDay, PlannedWeek, Segment, TrainingPlan, Workout, WorkoutKind
+from engine.plan.models import (
+    PlannedDay,
+    PlannedWeek,
+    PlanScenarioMeta,
+    Segment,
+    TrainingPlan,
+    Workout,
+    WorkoutKind,
+)
 
 
 def _workout_from_dict(d: dict[str, Any]) -> Workout:
@@ -50,6 +58,17 @@ def _planned_week_from_dict(d: dict[str, Any]) -> PlannedWeek:
     )
 
 
+def _scenario_to_dict(s: PlanScenarioMeta | None) -> dict[str, Any] | None:
+    if s is None:
+        return None
+    return {
+        "scenario_id": s.scenario_id,
+        "target_peak_mpw": s.target_peak_mpw,
+        "reachable": s.reachable,
+        "flags": list(s.flags),
+    }
+
+
 def training_plan_to_dict(plan: TrainingPlan) -> dict[str, Any]:
     def walk(obj: Any) -> Any:
         if isinstance(obj, Enum):
@@ -67,6 +86,19 @@ def training_plan_to_dict(plan: TrainingPlan) -> dict[str, Any]:
 
 def training_plan_from_dict(d: dict[str, Any]) -> TrainingPlan:
     weeks = [_planned_week_from_dict(w) for w in d.get("weeks", [])]
+    scen = d.get("scenario")
+    scenario = (
+        PlanScenarioMeta(
+            scenario_id=str(scen["scenario_id"]),
+            target_peak_mpw=float(scen["target_peak_mpw"]),
+            reachable=bool(scen.get("reachable", True)),
+            flags=tuple(scen.get("flags", [])),
+        )
+        if isinstance(scen, dict)
+        else None
+    )
+    sibs_raw = d.get("sibling_scenarios") or []
+    sibling_scenarios = tuple(training_plan_from_dict(x) for x in sibs_raw if isinstance(x, dict))
     return TrainingPlan(
         athlete=str(d["athlete"]),
         method=str(d["method"]),
@@ -77,7 +109,10 @@ def training_plan_from_dict(d: dict[str, Any]) -> TrainingPlan:
         block_weeks=int(d["block_weeks"]),
         weeks=weeks,
         flags=list(d.get("flags", [])),
+        notes=list(d.get("notes", [])),
         generated_at=d.get("generated_at"),
+        scenario=scenario,
+        sibling_scenarios=sibling_scenarios,
     )
 
 

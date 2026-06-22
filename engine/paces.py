@@ -90,6 +90,42 @@ def _interp(vdot: float, key: str) -> float | None:
     return a + (b - a) * frac
 
 
+def _easy_midpoint_seconds(vdot: float) -> float:
+    """Midpoint of Daniels easy range (easy_low / easy_high interpolated) in seconds per mile."""
+    lo_s = _interp(vdot, "easy_low")
+    hi_s = _interp(vdot, "easy_high")
+    if lo_s is None or hi_s is None:
+        raise ValueError("easy pace interpolation returned None for VDOT in range")
+    return (lo_s + hi_s) / 2.0
+
+
+def vdot_from_easy_pace(easy_pace_s: int) -> float:
+    """VDOT whose Daniels easy-range midpoint matches ``easy_pace_s`` (seconds per mile).
+
+    Uses the same fractional interpolation as :func:`training_paces`. Slower easy
+    (higher seconds) implies lower VDOT. Values outside the feasible span of the
+    encoded table clamp to the low or high VDOT bound.
+    """
+    if not isinstance(easy_pace_s, int) or easy_pace_s <= 0:
+        raise ValueError("easy_pace_s must be a positive int (seconds per mile)")
+    v_lo, v_hi = vdot_bounds()
+    slow_lo = _easy_midpoint_seconds(float(v_lo))
+    fast_hi = _easy_midpoint_seconds(float(v_hi))
+    if easy_pace_s >= slow_lo:
+        return float(v_lo)
+    if easy_pace_s <= fast_hi:
+        return float(v_hi)
+    lo, hi = float(v_lo), float(v_hi)
+    for _ in range(80):
+        mid = (lo + hi) / 2.0
+        m = _easy_midpoint_seconds(mid)
+        if m > float(easy_pace_s):
+            lo = mid
+        else:
+            hi = mid
+    return round((lo + hi) / 2.0, 1)
+
+
 def _round_or_none(seconds: float | None) -> int | None:
     return None if seconds is None else round(seconds)
 

@@ -1,8 +1,9 @@
 """Typed LLM boundary: NL and format dumps in, validated events / narrative / style out.
 
-No live model in this repo build — ``stub_extract_events`` returns empty unless
-``Z2TC_LLM_STUB_EVENTS_JSON`` is set (JSON array of event payload objects for tests).
-The engine never trusts free text for numbers: payloads are validated with Pydantic.
+``extract_events`` prefers Gemini when ``GEMINI_API_KEY`` or ``GOOGLE_API_KEY`` is set;
+otherwise ``Z2TC_LLM_STUB_EVENTS_JSON`` (JSON array of event payload objects) supplies
+test payloads. The engine never trusts free text for numbers: payloads are validated
+with Pydantic; race VDOTs and detraining are recomputed in code.
 """
 
 from __future__ import annotations
@@ -10,11 +11,23 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
 
-from store.events import EventRecord, EventSource, parse_event_payload
+from engine import readiness as rd
+from engine.paces import vdot_from_easy_pace
+from engine.vdot import RACE_METERS, vdot_from_race
+from store.events import (
+    EventPayload,
+    EventRecord,
+    EventSource,
+    RaceEstimatePayload,
+    WeeklyEvaluationPayload,
+    parse_event_payload,
+)
 
 
 class PlanDiffSummary(BaseModel):
@@ -36,7 +49,382 @@ class StyleSpec(BaseModel):
     notes: str = ""
 
 
-def stub_extract_events(_text: str, *, athlete_id: str, source: EventSource = "llm") -> list[EventRecord]:
+_EXTRACT_SYSTEM = """You are a coaching assistant for a marathon training platform.
+Read the coach or athlete text and emit a JSON array ONLY (no markdown, no prose) of
+event objects. Each object must include \"kind\" matching one of the allowed kinds and
+all required fields for that kind.
+
+Allowed kinds and required fields:
+- WeeklyEvaluation: week_start (ISO date Monday YYYY-MM-DD), optional calibrated_vdot,
+  estimated_mpw, easy_pace_override_s (easy pace seconds per mile as integer),
+  note (string). Use easy_pace_override_s when the text gives an easy pace; do not invent
+  calibrated_vdot unless the text implies fitness from that pace (we will derive VDOT
+  from easy pace in code when needed).
+- EffortQuality: race_date (YYYY-MM-DD), quality one of max|submaximal|compromised, note.
+- Injury: area (string), severity 1-5, optional days_off.
+- Difficulty: delta integer -2 to 2.
+- RaceEstimate: race_name, race_date (YYYY-MM-DD), distance_m (float meters: 5000,
+  10000, 21097.5, or 42195), estimated_time_s (finish time seconds, coach-corrected),
+  optional actual_time_s, note. Do NOT include estimated_vdot or effective_vdot; code
+  computes them.
+- ManualOverride: field (must be a valid AthleteInputs dataclass field name), value
+  (JSON type matching that field).
+
+Omit kinds that are not clearly supported by the text. Return [] if nothing applies."""
+
+
+def _gemini_api_key() -> str | None:
+    k = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
+    return k or None
+
+
+def _gemini_model_name() -> str:
+    return (os.environ.get("Z2TC_GEMINI_MODEL") or "gemini-3.5-flash").strip()
+
+
+def _parse_iso_date(value: str) -> date | None:
+    s = str(value or "").strip()
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(s[:10])
+    except ValueError:
+        return None
+
+
+def _date_window(today: date, race_date_str: str | None, block_weeks: int | None) -> tuple[date, date]:
+    """Plausible calendar span for LLM-emitted dates (UTC calendar dates)."""
+    rd = _parse_iso_date(race_date_str or "")
+    if rd is None:
+        return today - timedelta(days=365), today + timedelta(days=365)
+    bw = block_weeks if block_weeks is not None else 18
+    span_days = max(1, int(bw)) * 7 + 14
+    return rd - timedelta(days=span_days), rd + timedelta(days=14)
+
+
+def date_window(today: date, race_date: str | None, block_weeks: int | None) -> tuple[date, date]:
+    """Public: plausible ISO-date window for extraction/review (see docs)."""
+    return _date_window(today, race_date, block_weeks)
+
+
+def _date_in_window(value: str, window: tuple[date, date]) -> bool | None:
+    """True in-window, False out-of-window, None if unparseable."""
+    d = _parse_iso_date(value)
+    if d is None:
+        return None
+    lo, hi = window
+    return lo <= d <= hi
+
+
+def _build_grounding(today: date, race_date_str: str | None, block_weeks: int | None) -> str:
+    parts = [f"Today is {today.isoformat()} (UTC calendar date)."]
+    rd = _parse_iso_date(race_date_str or "")
+    if rd is not None:
+        lo, hi = _date_window(today, race_date_str, block_weeks)
+        parts.append(
+            f"The athlete's goal race is {rd.isoformat()}. "
+            f"The current training block spans roughly {lo.isoformat()}..{hi.isoformat()}."
+        )
+    else:
+        lo, hi = _date_window(today, None, None)
+        parts.append(
+            f"No goal race date on file; prefer dates between {lo.isoformat()} and {hi.isoformat()}."
+        )
+    parts.append(
+        "Use 4-digit ISO dates (YYYY-MM-DD). When the coach text omits a year, "
+        "infer a year that places the event inside the block window above."
+    )
+    return " ".join(parts) + "\n\n"
+
+
+def _payload_date_fields(payload: EventPayload) -> list[tuple[str, str]]:
+    k = payload.kind
+    if k == "WeeklyEvaluation":
+        return [("week_start", getattr(payload, "week_start", ""))]
+    if k == "RaceEstimate":
+        return [("race_date", getattr(payload, "race_date", ""))]
+    if k == "EffortQuality":
+        return [("race_date", getattr(payload, "race_date", ""))]
+    if k == "DataExclude":
+        return [("race_date", getattr(payload, "race_date", ""))]
+    if k == "FitnessAnchor":
+        rd = getattr(payload, "race_date", None)
+        if rd is None or not str(rd).strip():
+            return []
+        return [("race_date", str(rd))]
+    if k == "SetRaceDate":
+        return [("race_date", getattr(payload, "race_date", ""))]
+    if k == "Unavailable":
+        return [
+            ("start", getattr(payload, "start", "")),
+            ("end", getattr(payload, "end", "")),
+        ]
+    return []
+
+
+def payload_out_of_window_fields(payload: EventPayload, window: tuple[date, date]) -> list[tuple[str, str]]:
+    """Date fields on ``payload`` that parse as ISO dates and fall outside ``window``."""
+    out: list[tuple[str, str]] = []
+    for field_name, raw in _payload_date_fields(payload):
+        if _date_in_window(raw, window) is False:
+            out.append((field_name, raw))
+    return out
+
+
+def _mondays_in_window(lo: date, hi: date) -> list[date]:
+    """ISO Mondays with ``lo <= Monday <= hi``."""
+    m = lo + timedelta(days=(7 - lo.weekday()) % 7)
+    if m < lo:
+        m += timedelta(days=7)
+    out: list[date] = []
+    while m <= hi:
+        out.append(m)
+        m += timedelta(days=7)
+    return out
+
+
+def _resolve_calendar_date_into_window(d: date, window: tuple[date, date], field_name: str) -> date:
+    """Map an out-of-window calendar day into ``window`` (deterministic). ``week_start`` → nearest Monday in window."""
+    lo, hi = window
+    if lo <= d <= hi:
+        return d
+    same_md: list[date] = []
+    for y in range(lo.year - 1, hi.year + 2):
+        try:
+            c = date(y, d.month, d.day)
+        except ValueError:
+            continue
+        if lo <= c <= hi:
+            same_md.append(c)
+    if not same_md:
+        base = lo if d < lo else hi
+    elif len(same_md) == 1:
+        base = same_md[0]
+    else:
+        base = min(same_md, key=lambda c: (abs((c - d).days), c.isoformat()))
+    if field_name == "week_start":
+        mondays = _mondays_in_window(lo, hi)
+        if not mondays:
+            return base
+        return min(mondays, key=lambda m: (abs((m - base).days), m.isoformat()))
+    return base
+
+
+def normalize_payload_calendar_dates(payload: EventPayload, window: tuple[date, date]) -> tuple[EventPayload, bool]:
+    """Rewrite parseable grounded calendar fields that sit outside ``window`` (Phase 7).
+
+    In-window values are left unchanged (including non-Monday ``week_start``). Unavailable
+    ``start``/``end`` are repaired if normalization inverts the range.
+    """
+    updates: dict[str, str] = {}
+    for fname, raw in _payload_date_fields(payload):
+        d = _parse_iso_date(raw)
+        if d is None:
+            continue
+        new_d = _resolve_calendar_date_into_window(d, window, fname)
+        new_s = new_d.isoformat()
+        old_key = str(raw or "").strip()[:10]
+        if old_key != new_s:
+            updates[fname] = new_s
+    if not updates:
+        return payload, False
+    new_payload = payload.model_copy(update=updates)
+    if getattr(new_payload, "kind", None) == "Unavailable":
+        us = _parse_iso_date(getattr(new_payload, "start", ""))
+        ue = _parse_iso_date(getattr(new_payload, "end", ""))
+        if us is not None and ue is not None and us > ue:
+            new_payload = new_payload.model_copy(update={"end": new_payload.start})
+    return new_payload, True
+
+
+def _normalize_proposed_records(athlete_id: str, records: list[EventRecord], window: tuple[date, date]) -> list[EventRecord]:
+    out: list[EventRecord] = []
+    for rec in records:
+        old = rec.payload
+        new_p, did = normalize_payload_calendar_dates(old, window)
+        if did:
+            for fname, raw_old in _payload_date_fields(old):
+                raw_new = next((v for n, v in _payload_date_fields(new_p) if n == fname), None)
+                if raw_new is not None and str(raw_old or "").strip()[:10] != str(raw_new or "").strip()[:10]:
+                    print(
+                        f"Date normalized (athlete={athlete_id}, kind={old.kind}, field={fname}, "
+                        f"was={raw_old!r}, now={raw_new!r}).",
+                        file=sys.stderr,
+                    )
+        out.append(rec.model_copy(update={"payload": new_p}) if did else rec)
+    return out
+
+
+def _apply_date_flags(athlete_id: str, records: list[EventRecord], window: tuple[date, date]) -> list[EventRecord]:
+    lo, hi = window
+    for rec in records:
+        for field_name, raw in payload_out_of_window_fields(rec.payload, window):
+            print(
+                f"Date flag (athlete={athlete_id}, kind={rec.payload.kind}, field={field_name}, "
+                f"value={raw!r}): outside plausible window {lo.isoformat()}..{hi.isoformat()}; "
+                "keeping as proposed for review.",
+                file=sys.stderr,
+            )
+    return records
+
+
+def _strip_json_fence(raw: str) -> str:
+    t = raw.strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```(?:json)?\s*", "", t, flags=re.I)
+        t = re.sub(r"\s*```$", "", t)
+    return t.strip()
+
+
+def _parse_hms_to_seconds(value: str) -> int | None:
+    value = str(value or "").strip()
+    if not value:
+        return None
+    try:
+        parts = [int(p) for p in value.split(":")]
+    except ValueError:
+        return None
+    if len(parts) == 3:
+        h, m, s = parts
+    elif len(parts) == 2:
+        h, m, s = 0, parts[0], parts[1]
+    else:
+        return None
+    return h * 3600 + m * 60 + s
+
+
+def _normalize_distance_m(data: dict[str, Any]) -> float | None:
+    if "distance_m" in data and isinstance(data["distance_m"], (int, float)):
+        return float(data["distance_m"])
+    label = str(data.get("distance") or data.get("race_distance") or "").strip().lower()
+    mapping = {
+        "5k": RACE_METERS["5K"],
+        "10k": RACE_METERS["10K"],
+        "half": RACE_METERS["Half Marathon"],
+        "half marathon": RACE_METERS["Half Marathon"],
+        "marathon": RACE_METERS["Marathon"],
+    }
+    if label in mapping:
+        return mapping[label]
+    for k, v in RACE_METERS.items():
+        if k.lower() == label:
+            return v
+    return None
+
+
+def _finalize_payload(p: EventPayload, *, break_days: int, cross_trained: bool) -> EventPayload:
+    if isinstance(p, WeeklyEvaluationPayload):
+        if p.easy_pace_override_s is not None and p.calibrated_vdot is None:
+            v = vdot_from_easy_pace(int(p.easy_pace_override_s))
+            return p.model_copy(update={"calibrated_vdot": v})
+        return p
+    if isinstance(p, RaceEstimatePayload):
+        est_s = p.estimated_time_s
+        if est_s <= 0:
+            return p
+        dist_m = float(p.distance_m)
+        est_v = vdot_from_race(dist_m, float(est_s))
+        if est_v is None:
+            return p
+        eff = rd.adjusted_vdot(est_v, int(break_days or 0), cross_trained)
+        return p.model_copy(
+            update={
+                "estimated_vdot": float(est_v),
+                "effective_vdot": float(eff),
+                "break_days": int(break_days or 0),
+            }
+        )
+    return p
+
+
+def _dict_to_payload(data: dict[str, Any], *, break_days: int, cross_trained: bool) -> EventPayload | None:
+    kind = data.get("kind")
+    if kind == "RaceEstimate":
+        dist_m = _normalize_distance_m(data)
+        if dist_m is None:
+            return None
+        est_s = data.get("estimated_time_s")
+        if isinstance(est_s, str):
+            est_s = _parse_hms_to_seconds(est_s)
+        if not isinstance(est_s, int) or est_s <= 0:
+            return None
+        act = data.get("actual_time_s")
+        if isinstance(act, str):
+            act = _parse_hms_to_seconds(act)
+        act_s = int(act) if isinstance(act, int) else None
+        note = str(data.get("note") or "")
+        rd_out = RaceEstimatePayload(
+            race_name=str(data.get("race_name") or "race"),
+            race_date=str(data.get("race_date") or ""),
+            distance_m=dist_m,
+            actual_time_s=act_s,
+            estimated_time_s=int(est_s),
+            estimated_vdot=0.0,
+            effective_vdot=0.0,
+            break_days=int(break_days or 0),
+            note=note,
+        )
+        return _finalize_payload(rd_out, break_days=break_days, cross_trained=cross_trained)
+    try:
+        base = parse_event_payload(data)
+    except (ValueError, TypeError):
+        return None
+    return _finalize_payload(base, break_days=break_days, cross_trained=cross_trained)
+
+
+def _gemini_parse_payloads(raw_text: str, *, break_days: int, cross_trained: bool) -> list[EventPayload]:
+    blob = _strip_json_fence(raw_text)
+    data = json.loads(blob)
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        return []
+    out: list[EventPayload] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        p = _dict_to_payload(item, break_days=break_days, cross_trained=cross_trained)
+        if p is not None:
+            out.append(p)
+    return out
+
+
+def _gemini_generate_json(
+    user_text: str,
+    *,
+    today: date | None = None,
+    race_date: str | None = None,
+    block_weeks: int | None = None,
+) -> str | None:
+    key = _gemini_api_key()
+    if not key:
+        return None
+    try:
+        import google.generativeai as genai  # type: ignore[import-untyped]
+    except ImportError:
+        return None
+    genai.configure(api_key=key)
+    model = genai.GenerativeModel(_gemini_model_name())
+    td = today if today is not None else datetime.now(timezone.utc).date()
+    ground = _build_grounding(td, race_date, block_weeks)
+    prompt = _EXTRACT_SYSTEM + "\n\n" + ground + "Coach/athlete text:\n" + user_text
+    resp = model.generate_content(
+        prompt,
+        generation_config={"response_mime_type": "application/json"},
+        request_options={"timeout": 120},
+    )
+    text = (getattr(resp, "text", None) or "").strip()
+    return text or None
+
+
+def stub_extract_events(
+    _text: str,
+    *,
+    athlete_id: str,
+    source: EventSource = "llm",
+    break_days: int = 0,
+    cross_trained: bool = False,
+) -> list[EventRecord]:
     raw = os.environ.get("Z2TC_LLM_STUB_EVENTS_JSON", "").strip()
     if not raw:
         return []
@@ -44,13 +432,60 @@ def stub_extract_events(_text: str, *, athlete_id: str, source: EventSource = "l
     out: list[EventRecord] = []
     for p in payloads:
         ev = parse_event_payload(p)
+        ev = _finalize_payload(ev, break_days=break_days, cross_trained=cross_trained)
         out.append(EventRecord(athlete_id=athlete_id, source=source, status="proposed", payload=ev))
     return out
 
 
-def extract_events(text: str, *, athlete_id: str, source: EventSource = "llm") -> list[EventRecord]:
-    """NL -> proposed events (stub unless env provides JSON payloads)."""
-    return stub_extract_events(text, athlete_id=athlete_id, source=source)
+def extract_events(
+    text: str,
+    *,
+    athlete_id: str,
+    source: EventSource = "llm",
+    break_days: int = 0,
+    cross_trained: bool = False,
+    today: date | None = None,
+    race_date: str | None = None,
+    block_weeks: int | None = None,
+) -> list[EventRecord]:
+    """NL -> proposed events (Gemini when API key set; else stub env JSON).
+
+    ``today`` defaults to today's UTC date. ``race_date`` / ``block_weeks`` (from survey
+    baseline) ground the Gemini prompt and define the plausibility window for stderr
+    date flags on proposed payloads.
+    """
+    td = today if today is not None else datetime.now(timezone.utc).date()
+    window = _date_window(td, race_date, block_weeks)
+    force_stub = os.environ.get("Z2TC_DISABLE_GEMINI", "").strip().lower() in ("1", "true", "yes")
+    if not force_stub and _gemini_api_key():
+        try:
+            raw = _gemini_generate_json(
+                text, today=td, race_date=race_date, block_weeks=block_weeks
+            )
+            if raw:
+                payloads = _gemini_parse_payloads(raw, break_days=break_days, cross_trained=cross_trained)
+                if payloads:
+                    recs = [
+                        EventRecord(athlete_id=athlete_id, source=source, status="proposed", payload=p)
+                        for p in payloads
+                    ]
+                    recs = _normalize_proposed_records(athlete_id, recs, window)
+                    return _apply_date_flags(athlete_id, recs, window)
+        except Exception as exc:
+            model = _gemini_model_name()
+            detail = str(exc).strip().replace("\n", " ")
+            if len(detail) > 120:
+                detail = detail[:117] + "..."
+            tail = f"{exc.__class__.__name__}: {detail}" if detail else exc.__class__.__name__
+            print(
+                f"Gemini extraction failed (model={model}, {tail}): falling back to stub",
+                file=sys.stderr,
+            )
+    recs = stub_extract_events(
+        text, athlete_id=athlete_id, source=source, break_days=break_days, cross_trained=cross_trained
+    )
+    recs = _normalize_proposed_records(athlete_id, recs, window)
+    return _apply_date_flags(athlete_id, recs, window)
 
 
 def narrate(diff: PlanDiffSummary) -> str:

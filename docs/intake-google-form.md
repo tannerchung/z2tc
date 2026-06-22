@@ -103,17 +103,34 @@ These do not change Daniels/Pfitzinger week math in code today; they drive **hum
 ## Link Form responses into the club spreadsheet
 
 1. In Google Forms: **Responses** tab → spreadsheet icon → **Select existing spreadsheet** → pick **Zone 2 Track Club Marathon 2026** (`1eBaCWrUVDXyrDdF4dN-W_Hxv2IrIbXqCGwv7IvKgS0w`).  
-2. Google creates a tab (often **Form Responses 1**). Rename it to **`Intake_responses`**.  
-3. Optional: on **Read Me First** or a small **Intake** tab, add `=HYPERLINK("https://docs.google.com/forms/d/<FORM_ID>/viewform","Open intake form")` with your live form URL.  
-4. Pipeline later: Apps Script or Python reads `Intake_responses` and merges with Strava-derived columns into `AthleteInputs`.
+2. Google creates a tab (often **Form Responses 1**). Rename it to **`Intake`**.  
+3. Optional: on **Read Me First**, add `=HYPERLINK("https://docs.google.com/forms/d/<FORM_ID>/viewform","Open intake form")` with your live form URL.  
+4. **Python:** [`store/intake_sheet.py`](../store/intake_sheet.py) + CLI ``python main.py pull-intake`` reads the ``Intake`` tab and merges with a base ``SurveyInputs`` JSON (Strava numerics). See cheatsheet + README Kelly demo.
 
-## Column order (match this when creating the Form)
+## Header mapping (live `Intake` tab)
 
-So the first row of the linked sheet lines up with tooling:
+`store/intake_sheet._map_header` recognizes the **live club form's** wording (not just the idealized canonical keys above). The reader tolerates extra/reordered columns and **logs a warning listing any unmapped non-trivial header** (`unmapped_headers`) so new questions are never silently dropped. Current live columns and their `SurveyInputs` targets:
 
-`Timestamp` | `Email` | `full_name` | `strava_id` | `primary_marathon` | `primary_date` | `primary_goal` | `marathon_2_name` | `marathon_2_date` | `marathon_3_name` | `marathon_3_date` | `days_per_week` | `long_run_day` | `injury_notes` | `method_choice` | `races_vacations_notes` | `coaching_extras_notes` | `secondary_marathon_notes` | `other_notes` | `coach_notes`
+| Form header (live) | `SurveyInputs` field |
+|--------------------|----------------------|
+| Athlete First/Last Name | `name` (combined) |
+| Strava Profile Link | `strava_profile_url` (+ matching) |
+| Which marathons are you running this year? | `marathons_selected` |
+| Which one is your primary? | `race_name` |
+| A / B / C Goal Time | `goal_marathon_s` / `goal_marathon_b_s` / `goal_marathon_c_s` |
+| Latest Half / Half Time | `latest_half_race_text` / `latest_half_time_s` |
+| Latest Marathon / Marathon Time | `latest_marathon_race_text` / `latest_marathon_time_s` |
+| When are you arriving / departing | `marathon_arrival_date` / `marathon_departure_date` |
+| Where are you staying? | `marathon_stay_description` |
+| Carb loading / Shakeout | `social_carb_load` / `social_shakeout` |
+| How many days per week can you run? | `days_per_week` |
+| Injury history or current issues? | `intake_injury_notes` (+ `injury_prone`) |
+| When are you starting your training? | `intake_training_start_date` |
+| In general how do you want to train? | `training_philosophy` |
+| Hard runs/week, Hard run difficulty | `hard_quality_sessions_pref` / `hard_session_intensity_pref` |
+| Frequency / Difficulty of long runs | `long_run_frequency_pref` / `long_run_difficulty_pref` |
 
-(Adjust names to match exactly what Google Forms exports; you can rename columns in the Form editor’s “Responses” settings.)
+**Known gap:** the live form has **no explicit primary-race date column** (only arrival/departure). `race_date` therefore comes from `defaults`/coach today; arrival date is captured separately. Add a date question (or a marathon-name→date lookup) to make `race_date` athlete-sourced.
 
 ## Script helper
 

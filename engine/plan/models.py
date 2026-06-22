@@ -1,8 +1,8 @@
 """Shared data model for the plan engine.
 
-One vocabulary that both the Daniels and Pfitzinger generators emit, so a renderer (and
-golden tests) only ever deal with one shape. ``AthleteInputs`` is the engine's contract;
-everything else is output.
+One vocabulary that the Daniels, Pfitzinger, and Higdon generators all emit, so a renderer
+(and the regression tests) only ever deal with one shape. ``AthleteInputs`` is the engine's
+contract; everything else is output.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ class WorkoutKind(str, Enum):
     RECOVERY = "recovery"
     STRIDES = "strides"
     RACE = "race"
+    CROSS = "cross"  # non-running cross-training (minutes only; 0 running miles)
 
 
 # Kinds that count as a "quality" (hard) session for structural checks.
@@ -65,7 +66,30 @@ class AthleteInputs:
     days_per_week: int
     race_date: str                 # **primary** A-race date, ISO "YYYY-MM-DD" (drives the block)
     injury_prone: bool = False
-    method: str | None = None      # force "daniels"/"pfitzinger"; None -> auto-assign
+    # Fitness-clock / break context (Strava-derived at merge time). Feed the freshness +
+    # Table 15.1 model in ``engine/readiness`` — they do NOT change the deterministic plan.
+    recent_break_days: int | None = None        # longest gap of *not running* in the lead-up
+    cross_trained_during_break: bool = False     # leg-aerobic cross-training during that gap (FVDOT-2)
+    cross_training_note: str | None = None       # human summary, e.g. "Pilates/Swim/Ride (475 acts)"
+    # Ramp start + observed pace. A race-fit returner re-enters *above* an off-season ``w_now``
+    # (readiness Table 15.2), so the ramp doesn't start at an absurdly low week 1 — see
+    # ``engine/readiness.recommended_reentry_volume`` and docs/architecture/athlete-readiness.md §4.
+    race_fit: bool = True                        # returning/race-fit (re-enter above w_now) vs base-from-scratch
+    recent_sustained_mpw: float | None = None    # a real recent multi-week mileage high (best re-entry signal)
+    reentry_start_mpw: float | None = None       # explicit ramp-start override; None -> readiness recommendation
+    observed_long_pace_s: int | None = None      # measured long-run pace s/mi (Strava); sizes the time-on-feet long run — VDOT still drives prescribed E/M/T/I
+    # Coach/event override for easy pace (s/mi). When set, ``build_plan`` narrows Daniels easy
+    # band around this midpoint so all generators share one easy reference without per-engine forks.
+    easy_pace_override_s: int | None = None
+    # Peak / comeback overrides (Daniels ramp + scenario generator).
+    coach_floor_mpw: float | None = None         # raises fast-regain ceiling toward demonstrated capacity
+    coach_target_mpw: float | None = None        # explicit peak target for volume ramp (overrides inferred peak)
+    # Optional program keys for single-author engines (None -> engine default / recommender).
+    higdon_program: str | None = None            # novice1 | novice2 | intermediate1 | intermediate2
+    hanson_program: str | None = None            # just_finish | beginner | advanced
+    append_post_marathon_recovery: bool = False  # append 5-wk Pfitz-style recovery after race week when True
+    emit_peak_scenarios: bool = False            # when True, build_plan returns primary + 3 peak variants (Daniels)
+    method: str | None = None      # force "daniels"/"pfitzinger"/"higdon"/"hanson"; None -> auto-assign
     block_weeks: int = 18
     race_name: str = "Marathon"
     # Other marathons the same season (e.g. NYC then Chicago). Block/taper still follow
@@ -176,6 +200,84 @@ class Workout:
         return self.kind in QUALITY_KINDS
 
 
+@dataclass(frozen=True)
+class GridCell:
+    kind: WorkoutKind
+    miles: float | None = None
+    text: str | None = None
+    segment_hints: list[dict] = field(default_factory=list)
+
+    def to_workout(self, paces: dict, mp_s: int, mp_str: str, easy_s: int, easy_str: str) -> Workout:
+        pace_s = None
+        pace_str = None
+        
+        if self.kind == WorkoutKind.REST:
+            return Workout(WorkoutKind.REST, self.text or "Rest")
+        elif self.kind == WorkoutKind.CROSS:
+            return Workout(WorkoutKind.CROSS, self.text or "Cross training (60 min)", duration_min=60)
+        
+        if self.kind in (WorkoutKind.EASY, WorkoutKind.LONG, WorkoutKind.RECOVERY, WorkoutKind.MEDIUM_LONG, WorkoutKind.GENERAL_AEROBIC, WorkoutKind.STRIDES):
+            pace_s = easy_s
+            pace_str = easy_str
+        elif self.kind == WorkoutKind.MARATHON_PACE:
+            pace_s = mp_s
+            pace_str = mp_str
+        elif self.kind == WorkoutKind.THRESHOLD:
+            pace_s = paces.get("threshold_s")
+            pace_str = paces.get("threshold")
+        elif self.kind == WorkoutKind.INTERVAL:
+            pace_s = paces.get("interval_s")
+            pace_str = paces.get("interval")
+        elif self.kind == WorkoutKind.REP:
+            pace_s = paces.get("rep_s")
+            pace_str = paces.get("rep")
+        
+        segments = []
+        for hint in self.segment_hints:
+            seg_pace_label = hint.get("pace_label", "E")
+            seg_pace_s = None
+            if seg_pace_label == "T":
+                seg_pace_s = paces.get("threshold_s")
+            elif seg_pace_label == "I":
+                seg_pace_s = paces.get("interval_s")
+            elif seg_pace_label == "R":
+                seg_pace_s = paces.get("rep_s")
+            elif seg_pace_label == "M":
+                seg_pace_s = mp_s
+            elif seg_pace_label == "E":
+                seg_pace_s = easy_s
+                
+            segments.append(
+                Segment(
+                    reps=hint.get("reps", 1),
+                    pace_label=seg_pace_label,
+                    pace_s=seg_pace_s,
+                    distance_m=hint.get("distance_m"),
+                    duration_s=hint.get("duration_s"),
+                    recovery=hint.get("recovery"),
+                )
+            )
+            
+        return Workout(
+            kind=self.kind,
+            label=self.text or f"{self.kind.value.capitalize()} run",
+            distance_mi=self.miles,
+            pace=pace_str,
+            pace_s=pace_s,
+            segments=segments,
+        )
+
+
+@dataclass(frozen=True)
+class PlanScenarioMeta:
+    """When a plan is one of several peak-mileage scenarios (e.g. P+0 / P+5 / P+10)."""
+
+    scenario_id: str              # e.g. "P+0", "P+5", "P+10"
+    target_peak_mpw: float
+    reachable: bool = True
+    flags: tuple[str, ...] = ()
+
+
 @dataclass
 class PlannedDay:
     day: str                       # one of DAY_NAMES
@@ -183,6 +285,13 @@ class PlannedDay:
 
     @property
     def miles(self) -> float:
+        return self.workout.distance_mi or 0.0
+
+    @property
+    def running_miles(self) -> float:
+        """Exclude cross-training minutes-only days from weekly running totals."""
+        if self.workout.kind == WorkoutKind.CROSS:
+            return 0.0
         return self.workout.distance_mi or 0.0
 
 
@@ -199,6 +308,10 @@ class PlannedWeek:
     @property
     def planned_miles(self) -> float:
         return round(sum(d.miles for d in self.days), 1)
+
+    @property
+    def planned_running_miles(self) -> float:
+        return round(sum(d.running_miles for d in self.days), 1)
 
     @property
     def quality_days(self) -> list[PlannedDay]:
@@ -222,4 +335,7 @@ class TrainingPlan:
     block_weeks: int
     weeks: list[PlannedWeek] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)   # informational rationale/citations (not warnings)
     generated_at: str | None = None
+    scenario: PlanScenarioMeta | None = None       # set when this plan is one of a peak scenario set
+    sibling_scenarios: tuple["TrainingPlan", ...] = ()  # other scenarios from same build (empty for single)

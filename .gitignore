@@ -6,6 +6,7 @@ auth/
 # Scraped output + athlete / club PII (names, Strava URLs, activity metadata)
 output/
 *.jsonl
+!tests/fixtures/training_synthetic.jsonl
 # If you write scrape exports next to the repo instead of under output/
 athletes.jsonl
 training.jsonl
