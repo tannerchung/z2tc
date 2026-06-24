@@ -11,7 +11,7 @@
 3. [`docs/architecture/overview.md`](docs/architecture/overview.md) — layers and data flow.
 4. Task-specific:
    - Coaching decision model (fitness vs volume, P/tiers, re-entry, goal realism, breaks) → [`docs/architecture/athlete-readiness.md`](docs/architecture/athlete-readiness.md)
-   - Plan math / generators → [`docs/architecture/plan-engine.md`](docs/architecture/plan-engine.md); book-cited constants → [`docs/architecture/formula-reference.md`](docs/architecture/formula-reference.md)
+   - Plan math / generators → [`docs/architecture/plan-engine.md`](docs/architecture/plan-engine.md); book-cited constants → [`docs/architecture/formula-reference.md`](docs/architecture/formula-reference.md); workout dictionary + rotation → [`docs/architecture/workout-catalog.md`](docs/architecture/workout-catalog.md)
    - Event log + replan contract → [`docs/architecture/event-sourcing.md`](docs/architecture/event-sourcing.md)
    - Scraping, `analyze`, `marathon-report` → [`docs/architecture/feeds-and-analysis.md`](docs/architecture/feeds-and-analysis.md)
    - Intake form → `AthleteInputs` contract → [`docs/intake-and-engine.md`](docs/intake-and-engine.md)

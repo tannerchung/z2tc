@@ -66,6 +66,10 @@ class AthleteInputs:
     days_per_week: int
     race_date: str                 # **primary** A-race date, ISO "YYYY-MM-DD" (drives the block)
     injury_prone: bool = False
+    returning_marathoner: bool = False
+    last_marathon_date: str | None = None       # ISO; anchor block from Strava latest marathon
+    last_marathon_time_s: int | None = None     # chip or Strava time at that marathon
+    decayed_peak_mpw: float | None = None       # p_history after volume-capacity decay (advisory)
     # Fitness-clock / break context (Strava-derived at merge time). Feed the freshness +
     # Table 15.1 model in ``engine/readiness`` — they do NOT change the deterministic plan.
     recent_break_days: int | None = None        # longest gap of *not running* in the lead-up
@@ -84,6 +88,10 @@ class AthleteInputs:
     # Peak / comeback overrides (Daniels ramp + scenario generator).
     coach_floor_mpw: float | None = None         # raises fast-regain ceiling toward demonstrated capacity
     coach_target_mpw: float | None = None        # explicit peak target for volume ramp (overrides inferred peak)
+    # Per-athlete coach overrides (set via ManualOverride events; default keeps book behavior).
+    aggressive_volume_ramp: bool = False         # +1 mi/running-day EVERY week to peak (vs Daniels' 3-wk hold)
+    long_run_cap_mi: float | None = None         # let the long run build to this distance, over the 3 h / share caps (monitored)
+    quality_long_runs_race_prep_only: bool = False  # keep threshold long runs easy; quality longs only in race-prep (4-day load)
     # Optional program keys for single-author engines (None -> engine default / recommender).
     higdon_program: str | None = None            # novice1 | novice2 | intermediate1 | intermediate2
     hanson_program: str | None = None            # just_finish | beginner | advanced

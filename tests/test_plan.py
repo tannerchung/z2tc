@@ -264,6 +264,128 @@ def test_daniels_full_plan():
         assert w.target_miles <= plan.peak_miles + 0.05
 
 
+def test_daniels_race_week_and_taper_structure():
+    plan = build_plan(_daniels_athlete())
+    weeks = plan.weeks
+
+    # Race week: marathon on Sat, a real shakeout the day before, and no 0-mile filler runs.
+    race_wk = weeks[-1]
+    by_day = {d.day: d.workout for d in race_wk.days}
+    assert by_day["Sat"].kind == WorkoutKind.RACE
+    assert "Shakeout" in by_day["Fri"].label
+    assert 0 < (by_day["Fri"].distance_mi or 0) <= 3.0
+    for d in race_wk.days:
+        if d.workout.kind == WorkoutKind.EASY:
+            assert (d.workout.distance_mi or 0) > 0, "race week must not emit 0-mile easy days"
+
+    # Taper long runs step DOWN week to week (and the race week carries no long run).
+    taper_longs = [
+        w.long_run.miles
+        for w in weeks
+        if w.phase == "Taper" and w.long_run is not None
+    ]
+    assert len(taper_longs) >= 2
+    assert taper_longs == sorted(taper_longs, reverse=True), taper_longs
+
+
+def test_daniels_rotates_workout_catalog():
+    # "Rotate with purpose": across the build the long run and the midweek Q2 must draw several
+    # distinct catalog sessions, not repeat one workout — and every label must decode.
+    from render.workout_glossary import explain_workout_label
+
+    plan = build_plan(_daniels_athlete())
+    long_names, q2_names = set(), set()
+    for w in plan.weeks:
+        if w.is_down_week or w.phase not in ("Threshold", "Race Prep"):
+            continue
+        lr = w.long_run
+        if lr is not None:
+            long_names.add(lr.workout.label.split(":")[0].split(" mi")[0])
+        for d in w.days:
+            if d.workout.is_quality and (lr is None or d.day != lr.day):
+                q2_names.add(d.workout.label.split(":")[0])
+                assert explain_workout_label(d.workout.label) != d.workout.label, d.workout.label
+
+    # At least 3 distinct quality long-run *types* and 3 distinct midweek sharpeners.
+    assert len(long_names) >= 3, long_names
+    assert len(q2_names) >= 3, q2_names
+
+
+def test_workout_catalog_dictionary_is_complete():
+    # The catalog is the repo's workout dictionary: every entry must carry a definition and a
+    # generation note, and every label it emits must decode to a coach-readable explanation
+    # (no raw labels leaking through the glossary).
+    from engine.plan import workouts
+    from render.workout_glossary import explain_workout_label
+
+    paces = training_paces(43)
+    ctx = workouts.WeekContext(
+        caps=common.session_caps(45.0, 540), paces=paces, mp_s=540, mp_str="9:00",
+        easy_s=600, easy_str="10:00", long_mi=14.0,
+    )
+    for w in workouts.CATALOG_WORKOUTS:
+        assert w.purpose.strip(), w.key
+        assert w.generation.strip(), w.key
+        built = w.build(ctx)
+        explained = explain_workout_label(built.label)
+        assert explained and explained != built.label, f"{w.key}: {built.label!r}"
+
+
+def test_taper_uses_race_pace_sharpener():
+    # The taper should keep a low-fatigue, race-specific touch late (mirrors a real Runna taper):
+    # a goal-pace "Race-pace reps" session appears in a non-race taper week, at marathon pace.
+    plan = build_plan(_daniels_athlete())
+    taper_q2 = [
+        d.workout
+        for w in plan.weeks if w.phase == "Taper"
+        for d in w.days
+        if d.workout.kind == WorkoutKind.MARATHON_PACE
+    ]
+    assert any("Race-pace reps" in wo.label for wo in taper_q2), [wo.label for wo in taper_q2]
+
+
+def test_daniels_block_ends_with_race_practice_dress_rehearsal():
+    # The final non-down build week is the dress rehearsal (one sustained MP block) — the
+    # block's most race-specific long run, before the taper trims volume.
+    plan = build_plan(_daniels_athlete())
+    build_qual = [
+        w for w in plan.weeks
+        if w.phase in ("Threshold", "Race Prep") and not w.is_down_week and w.long_run is not None
+    ]
+    last = build_qual[-1]
+    assert "Race-practice long run" in last.long_run.workout.label
+    # Exactly one dress rehearsal in the block.
+    n = sum("Race-practice" in (w.long_run.workout.label if w.long_run else "") for w in plan.weeks)
+    assert n == 1
+
+
+def test_race_week_never_schedules_runs_after_an_early_week_race():
+    # "Races can be any day": a Monday race must not place easy runs later in the week (after it).
+    plan = build_plan(_daniels_athlete(race_date="2026-10-12"))  # a Monday
+    race_wk = plan.weeks[-1]
+    race_idx = next(i for i, d in enumerate(race_wk.days) if d.workout.kind == WorkoutKind.RACE)
+    for i, d in enumerate(race_wk.days):
+        if i > race_idx:
+            assert d.workout.kind == WorkoutKind.REST, f"{d.day} is after the race"
+    assert any("not a weekend" in f for f in plan.flags)
+
+
+def test_sunday_race_places_race_and_shakeout_on_correct_days():
+    # The club trains long on Saturday, but a Sunday marathon (e.g. Chicago) must put the race on
+    # Sunday and its day-before shakeout on Saturday — not the Saturday/Friday a Saturday race uses.
+    plan = build_plan(_daniels_athlete(race_date="2026-10-11"))  # a Sunday
+    by_day = {d.day: d.workout for d in plan.weeks[-1].days}
+    assert by_day["Sun"].kind == WorkoutKind.RACE
+    assert "Shakeout" in by_day["Sat"].label
+    assert by_day["Fri"].kind == WorkoutKind.REST  # two days out stays rest
+
+    # A Saturday race keeps the original Saturday race / Friday shakeout.
+    sat = build_plan(_daniels_athlete(race_date="2026-10-10"))  # a Saturday
+    sat_days = {d.day: d.workout for d in sat.weeks[-1].days}
+    assert sat_days["Sat"].kind == WorkoutKind.RACE
+    assert "Shakeout" in sat_days["Fri"].label
+
+
 def test_pfitzinger_full_plan():
     plan = build_plan(_pfitz_athlete())
     assert plan.method == common.PFITZINGER

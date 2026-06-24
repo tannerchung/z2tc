@@ -7,10 +7,13 @@ from typing import Any
 
 from googleapiclient.errors import HttpError
 
-from engine.plan.models import DAY_NAMES, TrainingPlan
+from engine.plan.models import AthleteInputs, TrainingPlan
 from llm.boundary import StyleSpec
 from store.events import DifficultyPayload, EventRecord, FatigueFlagPayload
 
+from render.plan_layout import build_plan_sheet, plan_to_values
+from render.plan_sheet_format import build_format_requests
+from render.plan_sheet_theme import PlanSheetTheme, theme_from_style_spec
 from render.style import default_club_spreadsheet_id
 
 
@@ -42,43 +45,6 @@ def _ensure_sheet(service: Any, spreadsheet_id: str, title: str) -> tuple[int, b
     return new_id, True
 
 
-def plan_to_values(plan: TrainingPlan) -> list[list[str | int | float]]:
-    """Tabular values: metadata rows, blank, header, one row per week."""
-    meta_rows: list[list[str | int | float]] = [
-        ["athlete", plan.athlete],
-        ["method", plan.method],
-        ["vdot", plan.vdot],
-        ["peak_miles", plan.peak_miles],
-        ["block_weeks", plan.block_weeks],
-        ["goal_name", str(plan.goal.get("name", ""))],
-        ["goal_date", str(plan.goal.get("date", ""))],
-        ["goal_time_s", str(plan.goal.get("goal_time_s", ""))],
-    ]
-    header = ["week", "phase", "label", "target_mi", "planned_mi"] + list(DAY_NAMES)
-    rows: list[list[str | int | float]] = [header]
-    for w in plan.weeks:
-        by_day = {d.day: d for d in w.days}
-        row: list[str | int | float] = [
-            w.index,
-            w.phase,
-            w.label,
-            w.target_miles,
-            w.planned_miles,
-        ]
-        for dn in DAY_NAMES:
-            d = by_day.get(dn)
-            if not d:
-                row.append("")
-                continue
-            wo = d.workout
-            cell = (wo.label or "").replace("\n", " ").strip()
-            if wo.distance_mi is not None:
-                cell = f"{cell} ({wo.distance_mi:g} mi)".strip()
-            row.append(cell)
-        rows.append(row)
-    return meta_rows + [[]] + rows
-
-
 def render_plan(
     plan: TrainingPlan,
     style: StyleSpec,
@@ -86,8 +52,10 @@ def render_plan(
     spreadsheet_id: str | None = None,
     sheet_title: str | None = None,
     service: Any = None,
+    hidden: bool = False,
+    inputs: AthleteInputs | None = None,
 ) -> dict[str, Any]:
-    """Write ``plan`` to a tab (create if missing) and apply light header formatting."""
+    """Write ``plan`` to a tab using the deterministic plan-sheet layout."""
     from render.runtime import sheets_service
 
     svc = service or sheets_service()
@@ -95,7 +63,18 @@ def render_plan(
     title = sheet_title or f"Z2TC_{(plan.athlete or 'plan')[:24]}".replace("/", "-")
     qt = _escape_sheet_title(title)
     sheet_id, is_new = _ensure_sheet(svc, ss_id, title)
-    values = plan_to_values(plan)
+
+    if inputs is not None:
+        layout = build_plan_sheet(plan, inputs)
+        values = layout.values
+        theme = theme_from_style_spec(style)
+        requests = build_format_requests(sheet_id, layout, theme)
+    else:
+        values = plan_to_values(plan)
+        layout = None
+        theme = theme_from_style_spec(style)
+        requests = _legacy_header_format(sheet_id, values, theme)
+
     if not is_new:
         try:
             svc.spreadsheets().values().clear(
@@ -105,36 +84,71 @@ def render_plan(
             ).execute()
         except HttpError:
             pass
+        # Drop stale merges *before* writing values — otherwise cells under an old merge
+        # are silently discarded and the new row appears blank.
+        try:
+            svc.spreadsheets().batchUpdate(
+                spreadsheetId=ss_id,
+                body={
+                    "requests": [
+                        {
+                            "unmergeCells": {
+                                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 200}
+                            }
+                        }
+                    ]
+                },
+            ).execute()
+        except HttpError:
+            pass
     svc.spreadsheets().values().update(
         spreadsheetId=ss_id,
         range=f"{qt}!A1",
         valueInputOption="RAW",
         body={"values": values},
     ).execute()
-    ncols = len(values[-1]) if values else 1
+
+    if hidden:
+        requests.append(
+            {
+                "updateSheetProperties": {
+                    "properties": {"sheetId": sheet_id, "hidden": True},
+                    "fields": "hidden",
+                }
+            }
+        )
+    if requests:
+        svc.spreadsheets().batchUpdate(
+            spreadsheetId=ss_id, body={"requests": requests}
+        ).execute()
+
     nrows = len(values)
-    header_row = next(
-        (i for i, r in enumerate(values) if r and r[0] == "week"),
-        0,
-    )
-    rgb = style.header_rgb
-    bg: dict[str, Any] | None = None
-    if rgb and len(rgb) == 3:
-        bg = {
-            "red": float(rgb[0]),
-            "green": float(rgb[1]),
-            "blue": float(rgb[2]),
-        }
+    return {
+        "spreadsheet_id": ss_id,
+        "sheet_title": title,
+        "rows_written": nrows,
+        "hidden": hidden,
+        "layout": "plan_sheet" if inputs is not None else "legacy",
+        "weeks": len(plan.weeks),
+    }
+
+
+def _legacy_header_format(
+    sheet_id: int, values: list[list], theme: PlanSheetTheme
+) -> list[dict[str, Any]]:
+    """Minimal header row when ``inputs`` omitted (tests / backward compat)."""
+    ncols = len(values[-1]) if values else 1
+    header_row = next((i for i, r in enumerate(values) if r and r[0] == "week"), 0)
+    rgb = theme.header_rgb
     fmt: dict[str, Any] = {
         "textFormat": {
             "bold": True,
-            "fontSize": style.title_font_size or 10,
-            "fontFamily": style.title_font_family or "Arial",
-        }
+            "fontSize": theme.header_font_size,
+            "fontFamily": theme.font_family,
+        },
+        "backgroundColor": {"red": rgb[0], "green": rgb[1], "blue": rgb[2]},
     }
-    if bg:
-        fmt["backgroundColor"] = bg
-    requests = [
+    return [
         {
             "repeatCell": {
                 "range": {
@@ -149,10 +163,6 @@ def render_plan(
             }
         }
     ]
-    svc.spreadsheets().batchUpdate(
-        spreadsheetId=ss_id, body={"requests": requests}
-    ).execute()
-    return {"spreadsheet_id": ss_id, "sheet_title": title, "rows_written": nrows}
 
 
 def read_feedback_cells(

@@ -92,6 +92,21 @@ def _taper_fracs(taper_weeks: int) -> list[float]:
     return table.get(taper_weeks, [0.80, 0.62, 0.45])
 
 
+def taper_long_fracs(non_race_taper_weeks: int) -> list[float]:
+    """Fractions of the **peak long run** for the non-race taper weeks (sec.4 taper). The long
+    run must step down through the taper — it should not sit near peak two weeks out. Daniels
+    ch.14 / Pfitzinger ch.7: shorten the long run progressively, with the last one clearly
+    reduced before race week (which carries no long run, only a shakeout + the marathon)."""
+    k = max(0, non_race_taper_weeks)
+    if k <= 0:
+        return []
+    if k == 1:
+        return [0.60]
+    if k == 2:
+        return [0.75, 0.50]
+    return [round(0.80 - 0.45 * i / (k - 1), 2) for i in range(k)]
+
+
 def weekly_volumes(
     start: float,
     peak: float,
@@ -331,51 +346,191 @@ def easy_pace(paces: dict) -> tuple[int, str]:
 
 
 def easy_workout(miles: float, pace_s: int, pace_str: str, *, strides: bool = False) -> Workout:
-    flags = ["6-8 x strides"] if strides else []
-    label = "Easy run + strides" if strides else "Easy run"
+    # Daniels strides (p.133): light, quick 20-sec runs (not sprints), 60 s rest — added to
+    # easy days to build economy; they do NOT make the day a quality session.
+    flags = ["6 x 20 sec strides"] if strides else []
+    label = "Easy run, then 6 x 20 sec strides to finish" if strides else "Easy run"
     return Workout(WorkoutKind.EASY, label, distance_mi=round(miles, 1), pace=pace_str, pace_s=pace_s, flags=flags)
 
 
 TEMPO_MAX_MIN = 20  # Daniels p.67: a single steady tempo run is ~20 min; beyond that, cruise intervals
+WARMUP_MI = 1.5     # easy miles before a quality main set
+COOLDOWN_MI = 1.5   # easy miles after a quality main set
 
 
-def threshold_workout(cap_mi: float, pace_s: int, pace_str: str) -> Workout:
+def _prescribe(name: str, work: str) -> str:
+    """Coach-prescriptive label: lead with the workout name, then the exact
+    warm-up → main set → cool-down sequence a runner executes in order."""
+    return f"{name}: {WARMUP_MI:g} mi easy warm-up \u2192 {work} \u2192 {COOLDOWN_MI:g} mi easy cool-down"
+
+
+def threshold_workout(
+    cap_mi: float, pace_s: int, pace_str: str, *, style: str = "auto", rep_mi: float = 1.0
+) -> Workout:
     """Threshold session bounded by the 10%-of-week T cap (``cap_mi``).
 
     Daniels (p.67-68): a steady tempo is ~20 min at T pace; accumulating more T volume
     means breaking the session into **cruise intervals** (T bouts with short jog rests),
     not running a longer continuous tempo. Warm-up/cool-down (~3 mi) sit outside the cap.
+
+    ``style`` lets the generator vary the format week to week without changing the stimulus:
+    ``"tempo"`` forces a single continuous tempo (capped at ~20 min), ``"cruise"`` forces
+    intervals, ``"auto"`` picks by volume. ``rep_mi`` sets the cruise-interval length
+    (1.0 = mile repeats, 0.5 = "broken-T" half-mile repeats).
     """
     work = max(3.0, round(cap_mi, 1))
     tempo_max_mi = TEMPO_MAX_MIN * 60.0 / pace_s
-    if work <= tempo_max_mi + 0.05:
-        seg = Segment(reps=1, pace_label="T", pace_s=pace_s, distance_m=round(work * METERS_PER_MILE))
-        label = f"Tempo: {work:g} mi @ T ({pace_str}/mi) + wu/cd"
+    use_tempo = style == "tempo" or (style == "auto" and work <= tempo_max_mi + 0.05)
+    if use_tempo:
+        steady = round(min(work, tempo_max_mi), 1) if style == "tempo" else round(work, 1)
+        seg = Segment(reps=1, pace_label="T", pace_s=pace_s, distance_m=round(steady * METERS_PER_MILE))
+        label = _prescribe("Tempo run", f"{steady:g} mi @ Threshold ({pace_str}/mi)")
+        total = steady
     else:
-        reps = max(2, round(work))  # ~1-mile cruise intervals
+        reps = max(2, round(work / max(0.25, rep_mi)))
         per = round(work / reps, 1)
         seg = Segment(reps=reps, pace_label="T", pace_s=pace_s, distance_m=round(per * METERS_PER_MILE), recovery="60 s jog")
-        label = f"Cruise intervals: {reps} x {per:g} mi @ T ({pace_str}/mi), 60 s jog + wu/cd"
+        label = _prescribe("Cruise intervals", f"{reps} x {per:g} mi @ Threshold ({pace_str}/mi) w/ 60 s jog")
+        total = work
     return Workout(
         WorkoutKind.THRESHOLD,
         label,
-        distance_mi=round(work + 3.0, 1),
+        distance_mi=round(total + WARMUP_MI + COOLDOWN_MI, 1),
         pace=pace_str,
         pace_s=pace_s,
         segments=[seg],
     )
 
 
-def interval_workout(cap_mi: float, pace_s: int, pace_str: str) -> Workout:
-    reps = max(4, round(cap_mi * METERS_PER_MILE / 1000.0))
-    seg = Segment(reps=reps, pace_label="I", pace_s=pace_s, distance_m=1000, recovery="equal-time jog")
-    work_mi = reps * 1000.0 / METERS_PER_MILE
+def interval_workout(cap_mi: float, pace_s: int, pace_str: str, *, rep_m: int = 1000) -> Workout:
+    """VO2max (Daniels I) reps at ``rep_m`` metres with equal-time jog recovery."""
+    reps = max(4, round(cap_mi * METERS_PER_MILE / rep_m))
+    seg = Segment(reps=reps, pace_label="I", pace_s=pace_s, distance_m=rep_m, recovery="equal-time jog")
+    work_mi = reps * rep_m / METERS_PER_MILE
     return Workout(
         WorkoutKind.INTERVAL,
-        f"VO2max: {reps} x 1000 m @ I ({pace_str}/mi), equal-time jog + wu/cd",
-        distance_mi=round(work_mi + 3.0, 1),
+        _prescribe("VO2max intervals", f"{reps} x {rep_m} m @ VO2max pace ({pace_str}/mi) w/ equal-time jog"),
+        distance_mi=round(work_mi + WARMUP_MI + COOLDOWN_MI, 1),
         pace=pace_str,
         pace_s=pace_s,
+        segments=[seg],
+    )
+
+
+def interval_ladder_workout(cap_mi: float, pace_s: int, pace_str: str) -> Workout:
+    """VO2max **ladder** (Daniels I): 400-800-1200-800-400 m at I pace, equal-time jog.
+
+    A single ~3.6 km ladder is a self-contained VO2max session; ``cap_mi`` is accepted for a
+    uniform call signature but the ladder shape is fixed (the wu/cd absorbs cap differences)."""
+    ladder = [400, 800, 1200, 800, 400]
+    segs = [
+        Segment(reps=1, pace_label="I", pace_s=pace_s, distance_m=d, recovery="equal-time jog")
+        for d in ladder
+    ]
+    work_mi = sum(ladder) / METERS_PER_MILE
+    return Workout(
+        WorkoutKind.INTERVAL,
+        _prescribe(
+            "VO2max pyramid",
+            f"400-800-1200-800-400 m @ VO2max pace ({pace_str}/mi) w/ equal-time jog",
+        ),
+        distance_mi=round(work_mi + WARMUP_MI + COOLDOWN_MI, 1),
+        pace=pace_str,
+        pace_s=pace_s,
+        segments=segs,
+    )
+
+
+def rep_workout(cap_mi: float, pace_s: int, pace_str: str, *, rep_m: int = 400) -> Workout:
+    """Repetition (Daniels R) session: short fast ``rep_m``-metre reps at R pace, full recovery.
+
+    R work develops speed/economy; it is light on volume (``session_caps["R"]`` ≈ 5% of the
+    week) and uses full (≈equal-distance jog) recovery rather than the short I jog. ``rep_m``
+    sets the rep length (400 m default; 200 m for pure turnover, Daniels p.135)."""
+    floor = 6 if rep_m >= 400 else 8
+    reps = max(floor, round(cap_mi * METERS_PER_MILE / rep_m))
+    seg = Segment(reps=reps, pace_label="R", pace_s=pace_s, distance_m=rep_m, recovery=f"full ({rep_m} m jog)")
+    work_mi = reps * rep_m / METERS_PER_MILE
+    return Workout(
+        WorkoutKind.REP,
+        _prescribe("Speed reps", f"{reps} x {rep_m} m @ Rep pace ({pace_str}/mi) w/ full {rep_m} m jog"),
+        distance_mi=round(work_mi + WARMUP_MI + COOLDOWN_MI, 1),
+        pace=pace_str,
+        pace_s=pace_s,
+        segments=[seg],
+    )
+
+
+def rolling_reps_workout(cap_mi: float, pace_s: int, pace_str: str) -> Workout:
+    """Rolling 400s (Runna): 400 m reps at Rep pace with only a short 200 m jog float — a
+    continuous, rhythm-focused turnover set (shorter recovery than ``rep_workout``'s full jog)."""
+    reps = max(6, round(cap_mi * METERS_PER_MILE / 400.0))
+    seg = Segment(reps=reps, pace_label="R", pace_s=pace_s, distance_m=400, recovery="200 m jog (continuous)")
+    work_mi = reps * 400.0 / METERS_PER_MILE
+    return Workout(
+        WorkoutKind.REP,
+        _prescribe("Rolling 400s", f"{reps} x 400 m @ Rep pace ({pace_str}/mi) w/ 200 m jog float"),
+        distance_mi=round(work_mi + WARMUP_MI + COOLDOWN_MI, 1),
+        pace=pace_str,
+        pace_s=pace_s,
+        segments=[seg],
+    )
+
+
+def drop_set_workout(cap_mi: float, pace_s: int, pace_str: str) -> Workout:
+    """VO2max **drop set** (Runna): a single 1000-800-600-400-200 m descending ladder at I pace,
+    equal-time jog. Like ``descending_intervals_workout`` but shorter/sharper — finishes fast on
+    tired legs. ``cap_mi`` accepted for a uniform signature; the set shape is fixed."""
+    ladder = [1000, 800, 600, 400, 200]
+    segs = [
+        Segment(reps=1, pace_label="I", pace_s=pace_s, distance_m=d, recovery="equal-time jog")
+        for d in ladder
+    ]
+    work_mi = sum(ladder) / METERS_PER_MILE
+    return Workout(
+        WorkoutKind.INTERVAL,
+        _prescribe("Drop set", f"1000-800-600-400-200 m @ VO2max pace ({pace_str}/mi) w/ equal-time jog"),
+        distance_mi=round(work_mi + WARMUP_MI + COOLDOWN_MI, 1),
+        pace=pace_str,
+        pace_s=pace_s,
+        segments=segs,
+    )
+
+
+def threshold_ladder_workout(cap_mi: float, pace_s: int, pace_str: str) -> Workout:
+    """Threshold **ladder** (Runna "Tempo 2-1-1"): descending threshold blocks with 60 s jogs —
+    a long block then shorter ones, same comfortably-hard T effort. Total T volume = ``cap_mi``
+    (the 10%-of-week T cap), split 50/25/25 (each block ≥ 0.5 mi)."""
+    a = max(0.5, round(cap_mi * 0.5, 1))
+    b = max(0.5, round(cap_mi * 0.25, 1))
+    c = max(0.5, round(cap_mi - a - b, 1))
+    segs = [
+        Segment(reps=1, pace_label="T", pace_s=pace_s, distance_m=round(d * METERS_PER_MILE), recovery="60 s jog")
+        for d in (a, b, c)
+    ]
+    return Workout(
+        WorkoutKind.THRESHOLD,
+        _prescribe("Threshold ladder", f"{a:g} + {b:g} + {c:g} mi @ Threshold ({pace_str}/mi) w/ 60 s jog (descending)"),
+        distance_mi=round(a + b + c + WARMUP_MI + COOLDOWN_MI, 1),
+        pace=pace_str,
+        pace_s=pace_s,
+        segments=segs,
+    )
+
+
+def mp_reps_workout(cap_mi: float, mp_s: int, mp_str: str, *, rep_mi: float = 0.5) -> Workout:
+    """Goal-pace reps (Runna "Race Pace Practice Half Miles"): short reps at marathon pace with a
+    60 s jog — a low-fatigue way to rehearse race rhythm, ideal in the taper / race week. Volume
+    is bounded by ``cap_mi`` (a trimmed M cap in the taper)."""
+    reps = max(3, round(cap_mi / max(0.25, rep_mi)))
+    seg = Segment(reps=reps, pace_label="M", pace_s=mp_s, distance_m=round(rep_mi * METERS_PER_MILE), recovery="60 s jog")
+    work_mi = reps * rep_mi
+    return Workout(
+        WorkoutKind.MARATHON_PACE,
+        _prescribe("Race-pace reps", f"{reps} x {rep_mi:g} mi @ MP ({mp_str}/mi) w/ 60 s jog"),
+        distance_mi=round(work_mi + WARMUP_MI + COOLDOWN_MI, 1),
+        pace=mp_str,
+        pace_s=mp_s,
         segments=[seg],
     )
 
@@ -422,7 +577,7 @@ def marathon_q1_workout(
 
     return Workout(
         WorkoutKind.MARATHON_PACE,
-        f"Q1 long run {total:g} mi (nonstop): " + " + ".join(parts) + f" (M @ {mp_str}/mi)",
+        f"Marathon long run {total:g} mi (nonstop): " + " + ".join(parts) + f" (M @ {mp_str}/mi)",
         distance_mi=total,
         pace=mp_str,
         pace_s=mp_s,
@@ -447,6 +602,158 @@ def mp_long_run(total_mi: float, mp_block_mi: float, mp_s: int, mp_str: str, eas
     )
 
 
+def over_under_workout(cap_mi: float, t_s: int, t_str: str, mp_s: int, mp_str: str) -> Workout:
+    """Threshold "over/unders": continuous 0.5 mi reps alternating Threshold (the *over*) with
+    marathon pace (the *under*). Same lactate-clearance stimulus as cruise intervals, but the
+    float down to MP — instead of a jog — trains rhythm changes at race-adjacent paces (a Runna
+    staple, consistent with Daniels' T work). Each rep banks 0.5 mi of T, so the T volume sits
+    near half the 10% T cap (the MP floats are easier than a tempo, so less T is appropriate)."""
+    overs = max(3, round(cap_mi))
+    segs: list[Segment] = []
+    for _ in range(overs):
+        segs.append(Segment(reps=1, pace_label="T", pace_s=t_s, distance_m=round(0.5 * METERS_PER_MILE)))
+        segs.append(Segment(reps=1, pace_label="M", pace_s=mp_s, distance_m=round(0.5 * METERS_PER_MILE)))
+    work = overs * 1.0
+    return Workout(
+        WorkoutKind.THRESHOLD,
+        _prescribe(
+            "Over/unders",
+            f"{overs} x (0.5 mi @ Threshold ({t_str}/mi) / 0.5 mi @ MP ({mp_str}/mi)) nonstop",
+        ),
+        distance_mi=round(work + WARMUP_MI + COOLDOWN_MI, 1),
+        pace=t_str,
+        pace_s=t_s,
+        segments=segs,
+    )
+
+
+def descending_intervals_workout(cap_mi: float, pace_s: int, pace_str: str) -> Workout:
+    """VO2max **descending** set: 1200-1000-800-600-400 m at I pace, equal-time jog. Same VO2max
+    stimulus as straight 1000s, but the shortening reps let pace stay honest as fatigue builds.
+    ``cap_mi`` is accepted for a uniform signature; the set shape is fixed (wu/cd absorbs caps)."""
+    ladder = [1200, 1000, 800, 600, 400]
+    segs = [
+        Segment(reps=1, pace_label="I", pace_s=pace_s, distance_m=d, recovery="equal-time jog")
+        for d in ladder
+    ]
+    work_mi = sum(ladder) / METERS_PER_MILE
+    return Workout(
+        WorkoutKind.INTERVAL,
+        _prescribe(
+            "Descending intervals",
+            f"1200-1000-800-600-400 m @ VO2max pace ({pace_str}/mi) w/ equal-time jog",
+        ),
+        distance_mi=round(work_mi + WARMUP_MI + COOLDOWN_MI, 1),
+        pace=pace_str,
+        pace_s=pace_s,
+        segments=segs,
+    )
+
+
+def progression_long_run(total_mi: float, easy_s: int, easy_str: str, mp_s: int, mp_str: str) -> Workout:
+    """Thirds progression long run (Humphrey/Daniels-friendly): easy → steady → marathon pace,
+    nonstop. Teaches pacing discipline and finishing strong on tired legs with less injury risk
+    than a sharp fast finish. Steady is the midpoint between Easy and MP."""
+    total = round(total_mi, 1)
+    a = round(total / 3.0, 1)
+    c = round(total - 2 * a, 1)
+    steady_s = round((easy_s + mp_s) / 2)
+    segs = [
+        Segment(reps=1, pace_label="E", pace_s=easy_s, distance_m=round(a * METERS_PER_MILE)),
+        Segment(reps=1, pace_label="steady", pace_s=steady_s, distance_m=round(a * METERS_PER_MILE)),
+        Segment(reps=1, pace_label="M", pace_s=mp_s, distance_m=round(c * METERS_PER_MILE)),
+    ]
+    return Workout(
+        WorkoutKind.MARATHON_PACE,
+        f"Progression long run {total:g} mi (nonstop): {a:g} E + {a:g} steady + {c:g} M (M @ {mp_str}/mi)",
+        distance_mi=total,
+        pace=mp_str,
+        pace_s=mp_s,
+        segments=segs,
+    )
+
+
+def fast_finish_long_run(
+    total_mi: float, finish_cap_mi: float, easy_s: int, easy_str: str, mp_s: int, mp_str: str
+) -> Workout:
+    """Mostly-easy long run closed out at marathon pace (the final block). Builds late-race grit;
+    kept controlled (finish at MP, not faster) to protect the next week. The MP close is bounded
+    by the M cap so it never becomes a disproportionate share of the run."""
+    total = round(total_mi, 1)
+    finish = round(min(finish_cap_mi, max(2.0, total * 0.4)), 1)
+    easy = round(total - finish, 1)
+    segs = [
+        Segment(reps=1, pace_label="E", pace_s=easy_s, distance_m=round(easy * METERS_PER_MILE)),
+        Segment(reps=1, pace_label="M", pace_s=mp_s, distance_m=round(finish * METERS_PER_MILE)),
+    ]
+    return Workout(
+        WorkoutKind.MARATHON_PACE,
+        f"Fast-finish long run {total:g} mi (nonstop): {easy:g} E + {finish:g} M (M @ {mp_str}/mi)",
+        distance_mi=total,
+        pace=mp_str,
+        pace_s=mp_s,
+        segments=segs,
+    )
+
+
+def mp_blocks_long_run(
+    total_mi: float, m_cap: float, mp_s: int, mp_str: str, easy_s: int, easy_str: str
+) -> Workout:
+    """Long run with two marathon-pace blocks split by an easy float (the SF-marathon / Runna
+    "MP blocks"). Race-rhythm + fueling rehearsal; the broken structure banks more MP volume than
+    a single sustained block. Total MP is bounded by the M cap (18 mi / 20% week / 110 min)."""
+    total = round(total_mi, 1)
+    block = round(min(m_cap / 2.0, max(2.0, total * 0.25)), 1)
+    rec = 1.0
+    easy_total = round(max(2.0, total - 2 * block - rec), 1)
+    wu = round(easy_total * 0.5, 1)
+    cd = round(easy_total - wu, 1)
+    segs = [
+        Segment(reps=1, pace_label="E", pace_s=easy_s, distance_m=round(wu * METERS_PER_MILE)),
+        Segment(reps=1, pace_label="M", pace_s=mp_s, distance_m=round(block * METERS_PER_MILE)),
+        Segment(reps=1, pace_label="E", pace_s=easy_s, distance_m=round(rec * METERS_PER_MILE)),
+        Segment(reps=1, pace_label="M", pace_s=mp_s, distance_m=round(block * METERS_PER_MILE)),
+        Segment(reps=1, pace_label="E", pace_s=easy_s, distance_m=round(cd * METERS_PER_MILE)),
+    ]
+    return Workout(
+        WorkoutKind.MARATHON_PACE,
+        f"Marathon-pace blocks {total:g} mi (nonstop): {wu:g} E + {block:g} M + {rec:g} E + "
+        f"{block:g} M + {cd:g} E (M @ {mp_str}/mi)",
+        distance_mi=total,
+        pace=mp_str,
+        pace_s=mp_s,
+        segments=segs,
+    )
+
+
+def race_practice_long_run(
+    total_mi: float, m_cap: float, mp_s: int, mp_str: str, easy_s: int, easy_str: str
+) -> Workout:
+    """Dress-rehearsal long run: a short easy warm-up into one **sustained** marathon-pace block,
+    then a short easy close (Runna "Race Practice Long Run"; Pfitzinger's dedicated marathon-pace
+    run, ch.5). This is the block's most race-specific session — rehearse goal pace, fueling and
+    kit on tired-but-not-trashed legs. The MP block is the longest single one of the build, bounded
+    by the M cap (18 mi / 20% week / 110 min)."""
+    total = round(total_mi, 1)
+    block = round(min(m_cap, max(4.0, total - 3.0)), 1)
+    rest = round(total - block, 1)
+    wu = round(rest * 0.6, 1)
+    cd = round(max(0.0, rest - wu), 1)
+    segs = [
+        Segment(reps=1, pace_label="E", pace_s=easy_s, distance_m=round(wu * METERS_PER_MILE)),
+        Segment(reps=1, pace_label="M", pace_s=mp_s, distance_m=round(block * METERS_PER_MILE)),
+        Segment(reps=1, pace_label="E", pace_s=easy_s, distance_m=round(cd * METERS_PER_MILE)),
+    ]
+    return Workout(
+        WorkoutKind.MARATHON_PACE,
+        f"Race-practice long run {total:g} mi (nonstop): {wu:g} E + {block:g} M + {cd:g} E (M @ {mp_str}/mi)",
+        distance_mi=total,
+        pace=mp_str,
+        pace_s=mp_s,
+        segments=segs,
+    )
+
+
 def long_run_easy(total_mi: float, easy_pace_s: int, easy_str: str) -> Workout:
     return Workout(
         WorkoutKind.LONG,
@@ -454,6 +761,22 @@ def long_run_easy(total_mi: float, easy_pace_s: int, easy_str: str) -> Workout:
         distance_mi=round(total_mi, 1),
         pace=easy_str,
         pace_s=easy_pace_s,
+    )
+
+
+def long_run_fartlek(total_mi: float, easy_pace_s: int, easy_str: str) -> Workout:
+    """Aerobic long run with light fartlek surges sprinkled in (Humphrey "Long Run w/ Fartlek").
+    Stays an easy/long-effort day — the brief surges (~1 min, ~10K effort) break up the run and
+    add a touch of turnover without making it a true quality session. Surge count scales with
+    distance (~one per 1.5 mi)."""
+    surges = max(4, round(total_mi / 1.5))
+    return Workout(
+        WorkoutKind.LONG,
+        f"Long run w/ fartlek {total_mi:g} mi @ Easy ({easy_str}/mi) + {surges} x 1 min surges (~10K effort)",
+        distance_mi=round(total_mi, 1),
+        pace=easy_str,
+        pace_s=easy_pace_s,
+        flags=[f"{surges} x 1 min fartlek surges"],
     )
 
 
@@ -469,6 +792,60 @@ def medium_long_run(total_mi: float, easy_pace_s: int, easy_str: str) -> Workout
 
 def rest_day() -> Workout:
     return Workout(WorkoutKind.REST, "Rest")
+
+
+def shakeout_workout(miles: float, easy_pace_s: int, easy_str: str) -> Workout:
+    """Day-before-race opener: a very short, very easy jog with a few strides to stay loose
+    without adding fatigue (standard marathon-week practice; Pfitzinger race-week p.108)."""
+    return Workout(
+        WorkoutKind.EASY,
+        f"Shakeout: {miles:g} mi very easy + 4 x 20 sec strides (race tomorrow — stay loose)",
+        distance_mi=round(miles, 1),
+        pace=easy_str,
+        pace_s=easy_pace_s,
+        flags=["4 x 20 sec strides"],
+    )
+
+
+def race_week_days(
+    days_per_week: int,
+    race: Workout,
+    easy_pace_s: int,
+    easy_str: str,
+    race_day: str = LONG_RUN_DAY,
+) -> list[PlannedDay]:
+    """Marathon week (sec.3e). The race dominates volume, so this week is **not** filled to a
+    weekly mileage target like the others. Structure: a few short easy runs early in the week, a
+    **day-before shakeout** with strides, the race on its actual weekday, two days out left as
+    rest, and rest on the remaining days (Daniels ch.14 taper; Pfitzinger race week, p.108).
+
+    ``race_day`` is the race's real day of week (e.g. ``"Sun"`` for a Sunday marathon). The club
+    trains its long runs on Saturday, but the marathon itself — and its day-before shakeout — must
+    land on the actual race weekday, so a Sunday race shakes out Saturday, not Friday."""
+    workouts: dict[str, Workout] = {d: rest_day() for d in DAY_NAMES}
+    workouts[race_day] = race
+    ri = DAY_NAMES.index(race_day)
+    day_before = DAY_NAMES[ri - 1] if ri > 0 else None
+    two_before = DAY_NAMES[ri - 2] if ri >= 2 else None
+    if day_before:
+        workouts[day_before] = shakeout_workout(2.0, easy_pace_s, easy_str)
+
+    # Keep the marathon week deliberately light: only (days_per_week - 3) short easy runs on top
+    # of the day-before shakeout and the race. The day two out stays rest. Easy days are taken
+    # from the usual midweek priority, never colliding with the race / shakeout / two-out rest.
+    reserved = {race_day, day_before, two_before}
+    n_easy = max(1, days_per_week - 3)
+    # Easy runs must fall *before* the race within the week — never after it (so an early-week
+    # race, e.g. a Monday, simply carries fewer/no easy days; those sit in the prior week).
+    easy_days = [
+        d for d in ["Wed", "Tue", "Mon", "Thu"]
+        if d not in reserved and DAY_NAMES.index(d) < ri
+    ][:n_easy]
+    lengths = [4.0, 3.0, 3.0, 3.0]
+    for day, miles in zip(easy_days, lengths):
+        workouts[day] = easy_workout(miles, easy_pace_s, easy_str, strides=(day == easy_days[0]))
+
+    return [PlannedDay(d, workouts[d]) for d in DAY_NAMES]
 
 
 def cross_training_day(minutes: int = 60, *, label: str | None = None) -> Workout:
@@ -487,19 +864,27 @@ def assemble_week(
     fixed: dict[str, Workout],
     easy_pace_s: int,
     easy_str: str,
-    stride_days: int = 2,
+    stride_days: int = 1,
+    max_easy_mi: float | None = None,
 ) -> list[PlannedDay]:
     """Place ``fixed`` workouts on their days and fill the remaining run days with easy
     miles so the week sums to ~``target_mi``. Strides go on the first ``stride_days``
-    easy days."""
+    easy days. ``max_easy_mi`` caps each easy day (used in the taper so a shortened long run
+    sheds volume instead of ballooning the midweek easy runs)."""
     rdays = run_days(days_per_week)
     fixed_miles = sum((w.distance_mi or 0.0) for w in fixed.values())
     easy_days = [d for d in rdays if d not in fixed]
     remaining = max(0.0, target_mi - fixed_miles)
     per = remaining / len(easy_days) if easy_days else 0.0
+    if max_easy_mi is not None:
+        per = min(per, max_easy_mi)
 
     days: list[PlannedDay] = []
-    strides_left = stride_days
+    # House default follows Hanson: easy days stay easy (his SOS speed work carries the fast running,
+    # easy/recovery days are kept truly easy), so we add just one light economy stride session per
+    # week rather than peppering most easy runs the way a literal Daniels Phase I would (p.122/126).
+    # The clamp also guarantees at least one plain easy/recovery run remains.
+    strides_left = min(stride_days, max(0, len(easy_days) - 1))
     for d in DAY_NAMES:
         if d in fixed:
             days.append(PlannedDay(d, fixed[d]))
