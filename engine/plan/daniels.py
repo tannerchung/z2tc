@@ -5,7 +5,10 @@ Two quality sessions per week. In the marathon-specific phases the Saturday Q1 i
 with a midweek Q2 (threshold or intervals). Every 4th week is a **club cutback / down week**
 (~80% volume). Long-run length follows the Daniels time/share rule plus a **house rule**
 (see ``common.daniels_long_run``); quality volume is bounded by the single-session caps.
-Phases: Base -> Threshold -> Race Prep -> Taper.
+Strides are an economy touch — at most ``common.STRIDES_PER_PHASE`` stride weeks per phase, not
+every week. The ``long_run_cap_mi`` coach override (monitored) replaces the time/share cap with a
+progressive ramp that tops out at the cap only for the final ``long_run_peak_weeks`` build weeks
+(``common.coach_long_run_targets``). Phases: Base -> Threshold -> Race Prep -> Taper.
 """
 
 from __future__ import annotations
@@ -69,6 +72,7 @@ def build_daniels_plan(inputs: AthleteInputs, paces: dict) -> TrainingPlan:
     step_up = common.volume_step_ups(vols)
     easy_s, easy_str = common.easy_pace(paces)
     long_s = common.long_run_pace_s(inputs, easy_s)
+    q2_day = common.midweek_quality_day(inputs.days_per_week)  # midweek Q2, kept clear of the Sat long
     mp_s = common.marathon_pace_s(inputs.goal_marathon_s)
     mp_str = _fmt(mp_s)
 
@@ -99,9 +103,11 @@ def build_daniels_plan(inputs: AthleteInputs, paces: dict) -> TrainingPlan:
             "Daniels' 3-week hold) — monitor adherence and fatigue weekly"
         )
     if inputs.long_run_cap_mi:
+        peak_weeks = inputs.long_run_peak_weeks or common.DEFAULT_LONG_RUN_PEAK_WEEKS
         plan_flags.append(
-            f"coach override: long run builds to {inputs.long_run_cap_mi:g} mi, over the 3 h "
-            "time-on-feet / weekly-share caps — monitor long-run recovery and fueling"
+            f"coach override: long run ramps progressively to {inputs.long_run_cap_mi:g} mi and tops out "
+            f"there ~{peak_weeks} week(s) before the taper (over the 3 h time-on-feet / weekly-share "
+            "caps) — monitor long-run recovery and fueling"
         )
     if inputs.quality_long_runs_race_prep_only:
         plan_flags.append(
@@ -116,9 +122,19 @@ def build_daniels_plan(inputs: AthleteInputs, paces: dict) -> TrainingPlan:
         default=0,
     )
 
+    # Coach long-run cap: precompute a progressive ramp to the cap that only tops out for the last
+    # few build weeks, rather than reaching the cap and holding it most of the block.
+    override_long: dict[int, float] | None = None
+    if inputs.long_run_cap_mi:
+        override_long = common.coach_long_run_targets(
+            vols, build_n, inputs.long_run_cap_mi,
+            inputs.long_run_peak_weeks or common.DEFAULT_LONG_RUN_PEAK_WEEKS, long_s,
+        )
+
     weeks: list[PlannedWeek] = []
     peak_long_mi = 0.0
     long_run_cites: list[str] = []
+    strides_used: dict[str, int] = {}  # phase → stride weeks placed (capped at STRIDES_PER_PHASE)
     t_occ = 0       # threshold-phase Q2 (midweek) rotation counter
     rp_occ = 0      # race-prep Q2 (midweek) rotation counter
     t_q1_occ = 0    # threshold-phase long-run rotation counter
@@ -156,21 +172,20 @@ def build_daniels_plan(inputs: AthleteInputs, paces: dict) -> TrainingPlan:
                 taper_ctx = workouts.WeekContext(
                     caps=caps, paces=paces, mp_s=mp_s, mp_str=mp_str, easy_s=easy_s, easy_str=easy_str,
                 )
-                fixed["Wed"] = workouts.taper_q2(taper_occ, taper_ctx)
+                fixed[q2_day] = workouts.taper_q2(taper_occ, taper_ctx)
                 taper_occ += 1
         else:
             lr = common.daniels_long_run(target, long_s)
-            base_long_mi = lr.recommended_mi
-            if inputs.long_run_cap_mi:
-                # Coach override (monitored): build the long run toward the coach cap, scaling with
-                # the week's volume as a fraction of peak, so it reaches the cap at peak even when
-                # that means going over the 3 h time-on-feet / weekly-share safety caps. Never
-                # reduces the otherwise-recommended long run.
-                frac = min(1.0, target / peak) if peak else 1.0
-                base_long_mi = max(base_long_mi, round(inputs.long_run_cap_mi * frac, 1))
+            if override_long is not None:
+                # Coach override (monitored): follow the precomputed ramp, which climbs toward the
+                # cap and only sits at it for the final few build weeks (down weeks are book
+                # cutbacks). The ramp may exceed the 3 h / weekly-share safety caps near the peak.
+                base_long_mi = override_long[wk]
+                long_mi = base_long_mi
             else:
-                week_flags += lr.flags  # the "volume too low" flag is moot once we override the cap
-            long_mi = base_long_mi * (0.85 if is_down else 1.0)
+                base_long_mi = lr.recommended_mi
+                week_flags += lr.flags
+                long_mi = base_long_mi * (0.85 if is_down else 1.0)
             if base_long_mi > peak_long_mi:
                 peak_long_mi = base_long_mi
                 long_run_cites = lr.citations
@@ -215,18 +230,25 @@ def build_daniels_plan(inputs: AthleteInputs, paces: dict) -> TrainingPlan:
                 if phase == "Threshold":
                     # Rotate the T format week to week (same threshold stimulus, different feel):
                     # cruise miles → tempo → broken-T → over/unders.
-                    fixed["Wed"] = workouts.threshold_q2(t_occ, ctx)
+                    fixed[q2_day] = workouts.threshold_q2(t_occ, ctx)
                     t_occ += 1
                 elif phase == "Race Prep":
                     # Defer hard VO2max off mileage step-up weeks (Daniels p.36 / Pfitzinger
                     # ch.3): don't raise volume and pile on intervals the same week.
                     if step_up[i]:
-                        fixed["Wed"] = common.threshold_workout(caps["T"], paces["threshold_s"], paces["threshold"])
+                        fixed[q2_day] = common.threshold_workout(caps["T"], paces["threshold_s"], paces["threshold"])
                         week_flags.append("VO2max deferred this week (mileage step-up) — quality held at threshold")
                     else:
                         # Rotate the sharpener: VO2max 1000s → pyramid → descending → R reps.
-                        fixed["Wed"] = workouts.race_prep_q2(rp_occ, ctx)
+                        fixed[q2_day] = workouts.race_prep_q2(rp_occ, ctx)
                         rp_occ += 1
+
+        # Strides are an economy touch, not a weekly fixture: at most STRIDES_PER_PHASE stride
+        # weeks per phase (front-loaded), and never on a recovery/down week.
+        stride_days = 0
+        if not is_down and strides_used.get(phase, 0) < common.STRIDES_PER_PHASE:
+            stride_days = 1
+            strides_used[phase] = strides_used.get(phase, 0) + 1
 
         if phase == "Taper" and wk == n:
             days = common.race_week_days(
@@ -237,7 +259,8 @@ def build_daniels_plan(inputs: AthleteInputs, paces: dict) -> TrainingPlan:
             # piling onto the midweek easy runs.
             max_easy = 6.0 if phase == "Taper" else None
             days = common.assemble_week(
-                inputs.days_per_week, target, fixed, easy_s, easy_str, max_easy_mi=max_easy
+                inputs.days_per_week, target, fixed, easy_s, easy_str,
+                stride_days=stride_days, max_easy_mi=max_easy,
             )
         label = f"{phase}{' (down week)' if is_down else ''}"
         weeks.append(

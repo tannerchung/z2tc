@@ -90,7 +90,8 @@ per-phase occurrence counter picks the position, so the rotation is deterministi
   - **Threshold phase:** `mp_blend` ↔ `progression` (introduce goal-pace volume).
   - **Race Prep:** `mp_blocks` → `fast_finish` → `mp_blend`, and the last non-down Race-Prep week is
     forced to `race_practice` — the dress rehearsal.
-- **Q2 — the midweek quality** (Wednesday):
+- **Q2 — the midweek quality** (Tuesday on the 4-day week, Wednesday at 5+ days — held clear of
+  the Saturday long run; see `common.midweek_quality_day`):
   - **Threshold phase:** `cruise_mile` → `tempo` → `broken_t` → `over_unders` → `tempo_ladder`.
   - **Race Prep:** `vo2_intervals` → `drop_set` → `vo2_pyramid` → `vo2_1200` → `descending_i` →
     `rolling_400s` → `speed_reps`. On a **mileage step-up week** VO2max is deferred and the session

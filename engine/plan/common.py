@@ -17,6 +17,8 @@ TEN_K_MILES = 10000.0 / METERS_PER_MILE     # ~6.214
 LONG_RUN_CAP_MIN = 150                      # Daniels' easy long-run (L) time cap (p.63-64)
 LONG_RUN_CAP_MIN_M = 110                    # Daniels' marathon-pace (M) run time cap (p.62, p.65)
 LONG_RUN_CAP_MI = 18                        # Daniels' practical long-run distance cap (Table 14.3, p.237)
+STRIDES_PER_PHASE = 3                        # economy strides are a touch, not a weekly fixture (Hanson/Daniels)
+DEFAULT_LONG_RUN_PEAK_WEEKS = 3              # weeks allowed at the coach long-run cap before the taper
 
 # Only Daniels and Hanson put a *time cap* on the long run (the muscle-breakdown ceiling):
 # Daniels 150 min (p.63), Hanson a 2–3 h window — "beyond that, muscle breakdown begins to
@@ -265,6 +267,44 @@ def daniels_long_run(weekly_miles: float, easy_pace_s: float, marathon_build: bo
     )
 
 
+def coach_long_run_targets(
+    vols: list[float],
+    build_n: int,
+    cap_mi: float,
+    peak_weeks: int,
+    easy_pace_s: float,
+) -> dict[int, float]:
+    """Per-week long-run distances for the ``long_run_cap_mi`` coach override (monitored).
+
+    Climbs the long run from the book-recommended week-1 distance up to ``cap_mi``, reaching the
+    cap only on the **last ``peak_weeks`` non-down build long runs** (the earlier ones ramp
+    linearly below it). Down weeks (every 4th) drop to the book "recommended" easy long for that
+    week's volume — a genuine cutback. This is the "ramp slower, peak briefly" shape every 4-day
+    plan uses (Higdon Novice steps up to a single peak; Daniels caps the count) rather than
+    jumping to the cap and sitting there for most of the block.
+
+    Returned keys cover build weeks ``1..build_n`` only; the taper steps the long run down as a
+    fraction of the achieved peak (handled by the generator).
+    """
+    targets: dict[int, float] = {}
+    nondown = [wk for wk in range(1, build_n + 1) if wk % 4 != 0]
+    if not nondown:
+        return targets
+    start = min(daniels_long_run(vols[0], easy_pace_s).recommended_mi, cap_mi)
+    peak_weeks = max(1, min(peak_weeks, len(nondown)))
+    climb_n = len(nondown) - peak_weeks
+    for j, wk in enumerate(nondown):
+        if j >= climb_n:
+            targets[wk] = round(cap_mi, 1)
+        else:
+            frac = j / climb_n if climb_n else 1.0
+            targets[wk] = round(start + (cap_mi - start) * frac, 1)
+    for wk in range(1, build_n + 1):
+        if wk % 4 == 0:  # down week → book cutback long, not a near-peak effort
+            targets[wk] = daniels_long_run(vols[wk - 1], easy_pace_s).recommended_mi
+    return targets
+
+
 def long_run_notes(peak_long_mi: float, easy_pace_s: float, citation_keys: list[str]) -> list[str]:
     """Athlete-facing rationale + book references for the peak long run, for ``TrainingPlan.notes``."""
     from . import citations as _cite
@@ -317,20 +357,33 @@ def recovery_days_after_race(distance_m: float) -> int:
 
 
 # --- Week assembly (shared by both generators) -----------------------------------
-# Club long runs are Saturday (Zone 2 Track Club). Quality work stays midweek (Tue/Wed).
+# Club long runs are Saturday (Zone 2 Track Club). Quality work stays midweek.
 LONG_RUN_DAY = "Sat"
 
+# Day maps are spaced so the Saturday long run is **preceded by a rest day** at lower frequencies
+# (Higdon Novice brackets the weekend long with Fri/Mon rest): the 3- and 4-day weeks keep their
+# runs Mon–Thu and rest Friday, so a growing easy run never lands the day before the long run.
 RUN_DAYS_BY_COUNT = {
-    3: ["Tue", "Thu", "Sat"],
-    4: ["Tue", "Wed", "Fri", "Sat"],
+    3: ["Mon", "Wed", "Sat"],
+    4: ["Mon", "Tue", "Thu", "Sat"],
     5: ["Mon", "Tue", "Wed", "Fri", "Sat"],
     6: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
     7: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
 }
 
+# Midweek quality (Q2) day per frequency: a run day held well clear of the Saturday long run (and
+# off the day immediately after it). At 3–4 days Tuesday gives the widest Q2↔long separation; at
+# 5+ days the midweek medium-long sits Wednesday.
+QUALITY_DAY_BY_COUNT = {3: "Wed", 4: "Tue", 5: "Wed", 6: "Wed", 7: "Wed"}
+
 
 def run_days(days_per_week: int) -> list[str]:
     return RUN_DAYS_BY_COUNT.get(max(3, min(7, days_per_week)), RUN_DAYS_BY_COUNT[4])
+
+
+def midweek_quality_day(days_per_week: int) -> str:
+    """The day the Daniels generator places its midweek Q2 — always a run day for that frequency."""
+    return QUALITY_DAY_BY_COUNT.get(max(3, min(7, days_per_week)), QUALITY_DAY_BY_COUNT[4])
 
 
 def easy_pace(paces: dict) -> tuple[int, str]:
@@ -880,10 +933,11 @@ def assemble_week(
         per = min(per, max_easy_mi)
 
     days: list[PlannedDay] = []
-    # House default follows Hanson: easy days stay easy (his SOS speed work carries the fast running,
-    # easy/recovery days are kept truly easy), so we add just one light economy stride session per
-    # week rather than peppering most easy runs the way a literal Daniels Phase I would (p.122/126).
-    # The clamp also guarantees at least one plain easy/recovery run remains.
+    # Strides are a light economy touch, not a weekly fixture: easy days stay easy (Hanson keeps
+    # the fast running in the SOS sessions; a literal Daniels Phase I would pepper most easy runs,
+    # p.122/126). ``stride_days`` is normally 0 or 1 here; the generator budgets these to at most
+    # ``STRIDES_PER_PHASE`` weeks per phase rather than every week. The clamp also guarantees at
+    # least one plain easy/recovery run always remains.
     strides_left = min(stride_days, max(0, len(easy_days) - 1))
     for d in DAY_NAMES:
         if d in fixed:

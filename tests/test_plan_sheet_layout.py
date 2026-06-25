@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from engine.plan import build_plan
+from engine.plan import build_plan, common
 from engine.plan.models import AthleteInputs
 from render.plan_layout import build_plan_sheet
 from render.plan_sheet_format import build_format_requests
@@ -86,8 +86,9 @@ def test_why_explains_whole_week_intention():
     # Phase intention + a named physiological metric appear.
     assert any("phase" in w for w in whys)
     assert "lactate threshold" in blob and "VO2max" in blob
-    # The chosen quality days are named with their purpose (Wednesday Q2 + Saturday long run).
-    assert "Wednesday" in blob and "Saturday" in blob
+    # The chosen quality days are named with their purpose: the midweek Q2 (Tuesday on the 4-day
+    # week, spaced clear of the long run) and the Saturday long run.
+    assert "Tuesday" in blob and "Saturday" in blob
     # The +1 mi/day ramp and the dress rehearsal are called out where they occur.
     assert "+1 mile per running day" in blob
     assert "dress rehearsal" in blob
@@ -163,6 +164,82 @@ def test_strides_follow_hanson_at_most_one_per_week():
         assert len(stride_runs) <= 1, f"week {w.index}: more than one stride session"
         if len(easy) >= 2:
             assert len(stride_runs) < len(easy), f"week {w.index}: strides landed on every easy run"
+
+
+def test_strides_capped_at_three_weeks_per_phase():
+    # Strides are an economy touch, not a weekly fixture: no phase has more than 3 stride weeks,
+    # and down/recovery weeks never carry strides.
+    from collections import defaultdict
+
+    plan = build_plan(_cindy_inputs())
+    per_phase = defaultdict(int)
+    for w in plan.weeks:
+        has_strides = any(
+            d.workout and d.workout.flags and any("strides" in f.lower() for f in d.workout.flags)
+            for d in w.days
+        )
+        if has_strides:
+            per_phase[w.phase] += 1
+        if w.is_down_week:
+            assert not has_strides, f"down week {w.index} should have no strides"
+    for phase, count in per_phase.items():
+        assert count <= 3, f"{phase} has {count} stride weeks (max 3)"
+
+
+def test_long_run_ramps_to_cap_with_limited_peak_weeks():
+    # The long_run_cap_mi override ramps the long run up to the cap and only tops out there for the
+    # last few build weeks (default 3) — not a jump to the cap held most of the block. The early
+    # build long runs climb monotonically and the peak long run lands before the taper.
+    import dataclasses
+
+    inputs = _cindy_inputs()
+    plan = build_plan(inputs)
+    sat_longs = [
+        next((d.workout.distance_mi for d in w.days if d.day == "Sat" and d.workout.distance_mi), 0.0)
+        for w in plan.weeks
+    ]
+    cap = inputs.long_run_cap_mi
+    at_cap = [mi for mi in sat_longs if mi >= cap - 0.1]
+    assert at_cap, "long run should reach the cap"
+    assert len(at_cap) <= common.DEFAULT_LONG_RUN_PEAK_WEEKS, "too many weeks at the long-run cap"
+
+    # Non-down build long runs climb monotonically; down weeks dip as cutbacks (excluded here).
+    climbing = [
+        sat_longs[w.index - 1]
+        for w in plan.weeks
+        if w.index <= 8 and not w.is_down_week and sat_longs[w.index - 1]
+    ]
+    assert climbing == sorted(climbing), "non-down long runs should ramp up monotonically"
+    assert max(climbing) < cap - 1.0, "early long runs should be well under the cap"
+
+    # Fewer permitted peak weeks => fewer (or equal) weeks actually sitting at the cap.
+    two = build_plan(dataclasses.replace(inputs, long_run_peak_weeks=2))
+    two_at_cap = sum(
+        1 for w in two.weeks
+        if any(d.day == "Sat" and d.workout.distance_mi and d.workout.distance_mi >= cap - 0.1 for d in w.days)
+    )
+    assert two_at_cap <= 2
+
+
+def test_four_day_week_rests_the_day_before_the_long_run():
+    # Higdon-style 4-day spacing: runs cluster Mon–Thu and Friday is rest, so a growing easy run
+    # never lands the day before the Saturday long run, and the midweek Q2 stays clear of it.
+    from engine.plan.models import WorkoutKind
+
+    plan = build_plan(_cindy_inputs())
+    for w in plan.weeks[:-1]:  # exclude race week (its own structure)
+        by_day = {d.day: d.workout for d in w.days}
+        assert by_day["Fri"].kind == WorkoutKind.REST, f"week {w.index}: Friday should be rest before the long run"
+        run_days = [d for d in w.days if d.workout.kind != WorkoutKind.REST]
+        assert len(run_days) == 4, f"week {w.index}: expected 4 run days, got {len(run_days)}"
+    # Quality (Q2) sessions land on Tuesday, well clear of the Saturday long run.
+    q2_days = {
+        d.day
+        for w in plan.weeks[:-1]  # exclude race week (the race itself counts as quality)
+        for d in w.days
+        if d.workout.is_quality and d.day != "Sat"
+    }
+    assert q2_days == {"Tue"}, f"midweek quality should be Tuesday, got {q2_days}"
 
 
 def test_recovery_weeks_are_shaded():

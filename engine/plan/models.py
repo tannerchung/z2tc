@@ -91,6 +91,7 @@ class AthleteInputs:
     # Per-athlete coach overrides (set via ManualOverride events; default keeps book behavior).
     aggressive_volume_ramp: bool = False         # +1 mi/running-day EVERY week to peak (vs Daniels' 3-wk hold)
     long_run_cap_mi: float | None = None         # let the long run build to this distance, over the 3 h / share caps (monitored)
+    long_run_peak_weeks: int | None = None       # weeks held at long_run_cap_mi (default 3); ramps up to it before then
     quality_long_runs_race_prep_only: bool = False  # keep threshold long runs easy; quality longs only in race-prep (4-day load)
     # Optional program keys for single-author engines (None -> engine default / recommender).
     higdon_program: str | None = None            # novice1 | novice2 | intermediate1 | intermediate2
