@@ -884,16 +884,20 @@ def race_week_days(
         workouts[day_before] = shakeout_workout(2.0, easy_pace_s, easy_str)
 
     # Keep the marathon week deliberately light: only (days_per_week - 3) short easy runs on top
-    # of the day-before shakeout and the race. The day two out stays rest. Easy days are taken
-    # from the usual midweek priority, never colliding with the race / shakeout / two-out rest.
+    # of the day-before shakeout and the race. The day two out stays rest.
     reserved = {race_day, day_before, two_before}
     n_easy = max(1, days_per_week - 3)
-    # Easy runs must fall *before* the race within the week — never after it (so an early-week
-    # race, e.g. a Monday, simply carries fewer/no easy days; those sit in the prior week).
-    easy_days = [
+    # Place those easy runs on the athlete's *own* training days (so race week doesn't drop a run
+    # onto a normal rest day), preferring midweek; fall back to a generic midweek order only if the
+    # athlete's days don't supply enough. Easy runs must fall *before* the race within the week —
+    # never after it (an early-week race, e.g. a Monday, simply carries fewer/no easy days).
+    own_days = set(run_days(days_per_week))
+    available = [
         d for d in ["Wed", "Tue", "Mon", "Thu"]
         if d not in reserved and DAY_NAMES.index(d) < ri
-    ][:n_easy]
+    ]
+    easy_days = ([d for d in available if d in own_days]
+                 + [d for d in available if d not in own_days])[:n_easy]
     lengths = [4.0, 3.0, 3.0, 3.0]
     for day, miles in zip(easy_days, lengths):
         workouts[day] = easy_workout(miles, easy_pace_s, easy_str, strides=(day == easy_days[0]))

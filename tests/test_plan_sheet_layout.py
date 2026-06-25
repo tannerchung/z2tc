@@ -242,6 +242,20 @@ def test_four_day_week_rests_the_day_before_the_long_run():
     assert q2_days == {"Tue"}, f"midweek quality should be Tuesday, got {q2_days}"
 
 
+def test_race_week_easy_runs_land_on_training_days():
+    # Race week shouldn't drop a run onto a normal rest day: its easy run(s) fall on the athlete's
+    # own training days (Tue here), Wednesday stays rest, and the day before the race is a shakeout.
+    from engine.plan.models import WorkoutKind
+
+    plan = build_plan(_cindy_inputs())
+    by_day = {d.day: d.workout for d in plan.weeks[-1].days}
+    assert by_day["Sun"].kind == WorkoutKind.RACE
+    assert "Shakeout" in by_day["Sat"].label
+    assert by_day["Wed"].kind == WorkoutKind.REST  # her rest day stays rest
+    midweek_easy = [d for d in ("Mon", "Tue", "Thu") if by_day[d].kind != WorkoutKind.REST]
+    assert midweek_easy == ["Tue"], f"race-week easy run should be on a training day, got {midweek_easy}"
+
+
 def test_recovery_weeks_are_shaded():
     plan = build_plan(_cindy_inputs())
     layout = build_plan_sheet(plan, _cindy_inputs())
