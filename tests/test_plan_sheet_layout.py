@@ -63,10 +63,10 @@ def test_layout_shape_matches_club_tab():
     assert "BASE" in flat and "Weeks" in flat
     assert "RACE DAY" in flat
 
-    # The week reads as a calendar Sun→Sat; rest days are spelled out, not blanked.
+    # The week reads as a calendar Mon→Sun (weekend last); rest days are spelled out, not blanked.
     header = next(r for r in layout.rows if r.kind == "table_header").cells
     day_cols = [c for c in header if c in ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")]
-    assert day_cols == ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    assert day_cols == ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     assert "Rest Day" in flat
 
     # Every emitted row is padded to the declared width.
@@ -240,6 +240,22 @@ def test_four_day_week_rests_the_day_before_the_long_run():
         if d.workout.is_quality and d.day != "Sat"
     }
     assert q2_days == {"Tue"}, f"midweek quality should be Tuesday, got {q2_days}"
+
+
+def test_sunday_race_renders_as_the_last_cell_of_the_week():
+    # A Sunday marathon must be the *last* day cell of the final row (Mon→Sun), with that week's
+    # shakeout to its left — never with training shown after the race.
+    plan = build_plan(_cindy_inputs())
+    layout = build_plan_sheet(plan, _cindy_inputs())
+    header = next(r for r in layout.rows if r.kind == "table_header").cells
+    race_row = next(r for r in layout.rows if r.kind == "race_day")
+    day_cols = [i for i, k in enumerate(layout.column_kinds) if k == "day"]
+
+    race_idx = next(i for i in day_cols if "MARATHON" in str(race_row.cells[i]).upper())
+    assert race_idx == day_cols[-1], "race should be the last day cell of the week"
+    assert header[race_idx] == "Sun"
+    shakeout_idx = next(i for i in day_cols if "Shakeout" in str(race_row.cells[i]))
+    assert shakeout_idx < race_idx, "the shakeout must come before the race, not after it"
 
 
 def test_race_week_easy_runs_land_on_training_days():

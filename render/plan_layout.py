@@ -25,8 +25,10 @@ from render.workout_glossary import explain_workout_label
 
 _LONG_KINDS = {WorkoutKind.LONG, WorkoutKind.MARATHON_PACE, WorkoutKind.MEDIUM_LONG}
 
-# The sheet reads as a calendar week starting Sunday (engine week storage is Mon-first).
-WEEK_ORDER = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+# The sheet reads Monday→Sunday, matching the engine's chronological week order so the weekend
+# sits at the end of the row. This matters for a Sunday marathon: the race is the week's trailing
+# day, so it lands in the *last* cell, after that week's shakeout — never before its own training.
+WEEK_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 _DAY_FULL = {
     "Mon": "Monday", "Tue": "Tuesday", "Wed": "Wednesday", "Thu": "Thursday",
     "Fri": "Friday", "Sat": "Saturday", "Sun": "Sunday",
@@ -231,7 +233,7 @@ def _cell_label(day_obj) -> str:
 
 def _day_cell(day_obj) -> str:
     """Calendar-grid cell: spell out rest days ("Rest Day") rather than blanking them, so the
-    week reads as a full Sun→Sat rhythm."""
+    week reads as a full Mon→Sun rhythm."""
     if day_obj is None or day_obj.workout.kind == WorkoutKind.REST:
         return "Rest Day"
     return _cell_label(day_obj)
@@ -268,7 +270,7 @@ def build_plan_sheet(plan: TrainingPlan, inputs: AthleteInputs) -> PlanSheetLayo
     quality_day = _quality_day(plan, long_day)
 
     # Column plan from B onward (A is a spacer for phase-band merges). The week reads as a plain
-    # calendar Sun→Sat (all seven days, rest days included), then the weekly Total, and finally the
+    # calendar Mon→Sun (all seven days, rest days included), then the weekly Total, and finally the
     # coach's "Why" last — so the schedule comes first and the rationale is there only if wanted.
     # The quality (Q2) and long-run days just get wider columns and bold emphasis, not their own slots.
     col_specs: list[tuple[str, str]] = [("Wk", "wk"), ("Date", "date")]

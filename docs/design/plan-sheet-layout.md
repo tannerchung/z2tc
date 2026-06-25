@@ -34,17 +34,19 @@ Dictionary` tab and the per-week **Why** column).
 | *(blank)* | 1 | | |
 | **Paces block** | 1 header + 4 | B:E | `YOUR PACES (per mile)` → Easy / Marathon Pace / Threshold / Interval |
 | *(blank)* | 1 | | |
-| **Table header** | 1 | B:I | `Wk · Date · Sun · Mon · Tue · Wed · Thu · Fri · Sat · Total · Why` |
+| **Table header** | 1 | B:I | `Wk · Date · Mon · Tue · Wed · Thu · Fri · Sat · Sun · Total · Why` |
 | **Phase band** | 1 per phase | A:I merged | e.g. `BASE   Weeks 1–5 · Build the aerobic engine` |
-| **Week rows** | 1 per week | B:I | Wk, week-Saturday date, the seven day cells (Sun→Sat), weekly total, Why |
+| **Week rows** | 1 per week | B:I | Wk, week-Saturday date, the seven day cells (Mon→Sun), weekly total, Why |
 | **Race band + row** | 2 | A:I / B:I | `RACE DAY  {date}` band, then the marathon in its actual weekday cell |
 
-**Columns** read as a plain calendar week, **Sunday → Saturday**, with all seven days shown —
-rest days are spelled out as `Rest Day` so the week reads with its full rhythm. The **Why**
-column sits **last** (after Total), so the schedule and weekly volume come first and the rationale
-is there only if the athlete wants it. The quality (Q2) and long-run days are not separate columns;
-they live in their weekday cells but get wider columns and bold navy emphasis. `WEEK_ORDER` in
-`render/plan_layout.py` owns the Sunday-first ordering (the engine stores weeks Monday-first).
+**Columns** read as a plain calendar week, **Monday → Sunday** (weekend last), with all seven days
+shown — rest days are spelled out as `Rest Day` so the week reads with its full rhythm. Monday-first
+matches the engine's chronological storage, so a **Sunday marathon lands in the last cell** of the
+final row (after that week's shakeout) instead of being yanked to the front. The **Why** column sits
+**last** (after Total), so the schedule and weekly volume come first and the rationale is there only
+if the athlete wants it. The quality (Q2) and long-run days are not separate columns; they live in
+their weekday cells but get wider columns and bold navy emphasis. `WEEK_ORDER` in
+`render/plan_layout.py` owns the Monday-first ordering.
 
 ---
 
