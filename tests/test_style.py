@@ -8,7 +8,7 @@ from engine.plan.models import (
     Workout,
     WorkoutKind,
 )
-from render.sheets import plan_to_values
+from render.plan_layout import plan_to_values
 from render.style import derive_style_spec
 
 

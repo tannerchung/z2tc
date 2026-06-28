@@ -13,7 +13,7 @@ from store.events import DifficultyPayload, EventRecord, FatigueFlagPayload
 
 from render.plan_layout import build_plan_sheet, plan_to_values
 from render.plan_sheet_format import build_format_requests
-from render.plan_sheet_theme import PlanSheetTheme, theme_from_style_spec
+from render.plan_sheet_theme import PlanSheetTheme, method_tab_color, theme_from_style_spec
 from render.style import default_club_spreadsheet_id
 
 
@@ -54,18 +54,30 @@ def render_plan(
     service: Any = None,
     hidden: bool = False,
     inputs: AthleteInputs | None = None,
+    history: dict[str, Any] | None = None,
+    tune_up_results: list[tuple[float, int, float]] | None = None,
+    dossier: Any = None,
+    execution: Any = None,
+    llm_narrative: bool = False,
+    capture: list | None = None,
 ) -> dict[str, Any]:
-    """Write ``plan`` to a tab using the deterministic plan-sheet layout."""
+    """Write ``plan`` to a tab using the deterministic plan-sheet layout.
+
+    When ``capture`` is given, the deterministic-vs-final narrative records are appended to it (the
+    caller persists them to the store) — the observability log for the distillation loop."""
     from render.runtime import sheets_service
 
     svc = service or sheets_service()
     ss_id = spreadsheet_id or default_club_spreadsheet_id()
-    title = sheet_title or f"Z2TC_{(plan.athlete or 'plan')[:24]}".replace("/", "-")
+    title = sheet_title or (plan.athlete or "plan")[:24].replace("/", "-")
     qt = _escape_sheet_title(title)
     sheet_id, is_new = _ensure_sheet(svc, ss_id, title)
 
     if inputs is not None:
-        layout = build_plan_sheet(plan, inputs)
+        layout = build_plan_sheet(
+            plan, inputs, history=history, tune_up_results=tune_up_results,
+            dossier=dossier, execution=execution, llm_narrative=llm_narrative, capture=capture,
+        )
         values = layout.values
         theme = theme_from_style_spec(style)
         requests = build_format_requests(sheet_id, layout, theme)
@@ -108,6 +120,21 @@ def render_plan(
         body={"values": values},
     ).execute()
 
+    # Color the tab by coach method so the tab strip reads as a legend (Daniels/Pfitzinger/…).
+    tab_rgb = method_tab_color(plan.method)
+    if tab_rgb is not None:
+        requests.append(
+            {
+                "updateSheetProperties": {
+                    "properties": {
+                        "sheetId": sheet_id,
+                        "tabColor": {"red": tab_rgb[0], "green": tab_rgb[1], "blue": tab_rgb[2]},
+                    },
+                    "fields": "tabColor",
+                }
+            }
+        )
+
     if hidden:
         requests.append(
             {
@@ -131,6 +158,122 @@ def render_plan(
         "layout": "plan_sheet" if inputs is not None else "legacy",
         "weeks": len(plan.weeks),
     }
+
+
+def _write_styled_grid(svc, ss_id, title, values, build_requests, *, tab_rgb=None) -> int:
+    """Ensure a tab, clear/unmerge stale content, write ``values``, and apply formatting.
+
+    ``build_requests`` is called with the resolved ``sheet_id`` so format requests reference
+    the real tab regardless of whether it already existed.
+    """
+    qt = _escape_sheet_title(title)
+    sheet_id, is_new = _ensure_sheet(svc, ss_id, title)
+    if not is_new:
+        try:
+            svc.spreadsheets().values().clear(spreadsheetId=ss_id, range=qt, body={}).execute()
+        except HttpError:
+            pass
+        try:
+            svc.spreadsheets().batchUpdate(
+                spreadsheetId=ss_id,
+                body={"requests": [{"unmergeCells": {"range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 400}}}]},
+            ).execute()
+        except HttpError:
+            pass
+    svc.spreadsheets().values().update(
+        spreadsheetId=ss_id, range=f"{qt}!A1", valueInputOption="RAW", body={"values": values}
+    ).execute()
+    reqs = list(build_requests(sheet_id))
+    if tab_rgb is not None:
+        reqs.append({"updateSheetProperties": {"properties": {"sheetId": sheet_id, "tabColor": {"red": tab_rgb[0], "green": tab_rgb[1], "blue": tab_rgb[2]}}, "fields": "tabColor"}})
+    if reqs:
+        svc.spreadsheets().batchUpdate(spreadsheetId=ss_id, body={"requests": reqs}).execute()
+    return sheet_id
+
+
+def render_long_runs(
+    spine: TrainingPlan,
+    athletes: list,
+    style: StyleSpec,
+    *,
+    spreadsheet_id: str | None = None,
+    sheet_title: str = "Long Runs",
+    service: Any = None,
+    course_links: dict[int, str] | None = None,
+    subtitle: str | None = None,
+) -> dict[str, Any]:
+    """Render the club-wide Saturday Long Runs tab (union of each athlete's plan)."""
+    from render.runtime import sheets_service
+    from render.long_runs import build_long_runs_format_requests, build_long_runs_layout
+
+    svc = service or sheets_service()
+    ss_id = spreadsheet_id or default_club_spreadsheet_id()
+    layout = build_long_runs_layout(spine, athletes, course_links=course_links, subtitle=subtitle)
+    theme = theme_from_style_spec(style)
+    _write_styled_grid(
+        svc, ss_id, sheet_title, layout.values,
+        lambda sid: build_long_runs_format_requests(sid, layout, theme),
+        tab_rgb=theme.navy,
+    )
+    return {
+        "spreadsheet_id": ss_id,
+        "sheet_title": sheet_title,
+        "rows_written": len(layout.values),
+        "athletes": [a.name for a in athletes],
+        "workout_column": "workout" in layout.column_kinds,
+    }
+
+
+def render_read_me(
+    spine: TrainingPlan,
+    style: StyleSpec,
+    *,
+    spreadsheet_id: str | None = None,
+    sheet_title: str = "Read Me First",
+    service: Any = None,
+    athletes: list[str] | None = None,
+    marathons: list[tuple[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Render the Read Me First orientation tab from the spine plan's shape."""
+    from render.runtime import sheets_service
+    from render.read_me import build_read_me_format_requests, build_read_me_layout
+
+    svc = service or sheets_service()
+    ss_id = spreadsheet_id or default_club_spreadsheet_id()
+    layout = build_read_me_layout(spine, athletes=athletes, marathons=marathons)
+    theme = theme_from_style_spec(style)
+    _write_styled_grid(
+        svc, ss_id, sheet_title, layout.values,
+        lambda sid: build_read_me_format_requests(sid, layout, theme),
+        tab_rgb=theme.navy,
+    )
+    return {"spreadsheet_id": ss_id, "sheet_title": sheet_title, "rows_written": len(layout.values)}
+
+
+def render_workout_dictionary(
+    style: StyleSpec,
+    *,
+    spreadsheet_id: str | None = None,
+    sheet_title: str = "Workout Dictionary",
+    service: Any = None,
+) -> dict[str, Any]:
+    """Render the club Workout Dictionary tab from the engine catalog (no plan input needed)."""
+    from render.runtime import sheets_service
+    from render.workout_dictionary import (
+        build_workout_dictionary_format_requests,
+        build_workout_dictionary_layout,
+    )
+
+    svc = service or sheets_service()
+    ss_id = spreadsheet_id or default_club_spreadsheet_id()
+    layout = build_workout_dictionary_layout()
+    theme = theme_from_style_spec(style)
+    _write_styled_grid(
+        svc, ss_id, sheet_title, layout.values,
+        lambda sid: build_workout_dictionary_format_requests(sid, layout, theme),
+        tab_rgb=theme.navy,
+    )
+    return {"spreadsheet_id": ss_id, "sheet_title": sheet_title, "rows_written": len(layout.values)}
 
 
 def _legacy_header_format(
