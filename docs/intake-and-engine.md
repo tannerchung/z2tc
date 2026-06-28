@@ -143,8 +143,27 @@ The merge step should normalize Google Form answer text to these slugs so the en
 | `goal_marathon_b_s` / `c` | Sheet + coach targets; optional replan if A is unrealistic vs VDOT |
 | `intake_training_start_date` | Recompute `block_weeks`; align “Week 1” to club calendar row for that date |
 | `intake_injury_notes` + `injury_prone` | Lower peak, longer holds, fewer quality sessions |
+| `returning_marathoner` | When true (or Strava finds a prior marathon), merge anchors `p_history` / `last_marathon_*` on the latest Strava block, applies volume-capacity decay (`decayed_peak_mpw`), detrains VDOT (Table 15.1), sets `race_fit` when peak ≫ `w_now`. See [`store/merge_survey.py`](../store/merge_survey.py). |
 | `intake_races_vacations_notes` | Future: parsed dates → optional deload / travel-week adjustments (today: coach edits plan manually) |
 | `secondary_marathon_notes` + `secondary_races` | Coach narrative (B-race pacing, crew); engine still keys off primary `race_date` unless product adds multi-peak logic |
+
+### Coach overrides (no Form question, persisted on the baseline)
+
+These `SurveyInputs` fields have no athlete-facing Form question — the coach tunes them and
+they are stored on the **season baseline** so a `replan` reproduces the plan faithfully (the
+alternative is one `ManualOverride` event each). All map 1:1 to `AthleteInputs`.
+
+| Field | Effect |
+|-------|--------|
+| `weekday_quality_sessions` | Midweek quality count in a build week (pure 1 = Daniels 2Q; 2 adds a midweek race-pace run). The club engine (`engine/plan/club.py`) defaults this to 2 |
+| `base_quality_ramp` | Club policy: ease the second quality into the Base phase (1 → 2). Pure Daniels keeps Base aerobic |
+| `aggressive_volume_ramp` | +1 mi/running-day every week to peak (vs Daniels' 3-week hold) |
+| `long_run_cap_mi` / `long_run_peak_weeks` | Let the long run build past the 3 h / share caps (monitored), and weeks held there |
+| `quality_long_runs_race_prep_only` | Keep threshold long runs easy; quality longs only in race-prep |
+| `strides_per_phase` | Cap on stride weeks per phase |
+| `recent_sustained_mpw` / `reentry_start_mpw` / `observed_long_pace_s` | Re-entry + measured-pace signals (often Strava-derived; coach-editable) |
+
+`scripts/backfill_db.py` layers these onto an imported baseline and rebuilds the artifact.
 
 ---
 
@@ -153,7 +172,9 @@ The merge step should normalize Google Form answer text to these slugs so the en
 | Datum | Primary source | Override |
 |-------|----------------|----------|
 | `w_now`, `p_history`, `longest_run_mi` | Strava (last block + trailing weeks) | Coach manual |
-| `vdot` | Strava races + Table 5.1 | Form latest half/marathon if athlete says it’s more representative |
+| `vdot` | Strava races + Table 5.1 (+ **detrain** when `returning_marathoner`) | Form latest half/marathon if athlete says it’s more representative; coach `RaceEstimate` events |
+| `last_marathon_date`, `last_marathon_time_s`, `decayed_peak_mpw` | Strava latest marathon block (+ optional chip override) | Coach manual |
+| Chip times (NYRR + future feeds) | [`lib/data_feeds/chip_lookup.py`](../lib/data_feeds/chip_lookup.py) via merge `--chip-search` | Strava GPS when no chip |
 | `race_date`, `race_name`, primary | Form (required) | Must match merge validation |
 | `goal_marathon_s` (A) | Form (required) | — |
 | B / C goals | Form if present | Else absent |

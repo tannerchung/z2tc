@@ -15,7 +15,7 @@ import re
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from lib.marathon_calendar import resolve_race_date, year_hint_from_iso
+from lib.marathon_calendar import canonical_marathon_key, resolve_race_date, year_hint_from_iso
 from store.models import MarathonRaceIn, SurveyInputs
 
 _log = logging.getLogger(__name__)
@@ -68,6 +68,9 @@ _HEADER_RULES: list[tuple[str, str]] = [
     ("other_notes", "other_notes"),
     ("coach notes", "coach_notes"),
     ("coach_notes", "coach_notes"),
+    ("returning marathoner", "returning_marathoner"),
+    ("have you run a marathon", "returning_marathoner"),
+    ("completed a marathon", "returning_marathoner"),
     ("birthday", "birthday"),
     ("instagram", "instagram_handle"),
 ]
@@ -236,6 +239,19 @@ def _parse_method(raw: str | None) -> str | None:
     return None
 
 
+def _parse_yes_bool(raw: str | None) -> bool | None:
+    if raw is None:
+        return None
+    low = str(raw).strip().lower()
+    if not low:
+        return None
+    if low in ("yes", "y", "true", "1"):
+        return True
+    if low in ("no", "n", "false", "0"):
+        return False
+    return None
+
+
 def _injury_prone_from_notes(raw: str | None) -> bool:
     if not raw:
         return False
@@ -395,6 +411,10 @@ def canonical_row_to_survey(
         d["intake_injury_notes"] = row["injury_notes"]
         d["injury_prone"] = _injury_prone_from_notes(row["injury_notes"])
 
+    ret = _parse_yes_bool(row.get("returning_marathoner"))
+    if ret is not None:
+        d["returning_marathoner"] = ret
+
     if row.get("races_vacations_notes"):
         d["intake_races_vacations_notes"] = row["races_vacations_notes"]
     if row.get("coaching_extras_notes"):
@@ -421,6 +441,23 @@ def canonical_row_to_survey(
     n3, d3 = row.get("marathon_3_name"), row.get("marathon_3_date")
     if n3 and _parse_date_cell(d3):
         sec.append(MarathonRaceIn(name=n3.strip(), date=_parse_date_cell(d3) or ""))
+    # Live club form: the multi-select "which marathons are you running this year" lists every race;
+    # the non-primary picks become secondary marathons, with dates resolved from the official
+    # calendar (the form has no per-race date column). Skip any that can't be dated or that the
+    # explicit marathon_2/3 columns already cover.
+    if not sec and d.get("marathons_selected"):
+        year = year_hint_from_iso(d.get("race_date"))
+        primary_key = canonical_marathon_key(d.get("race_name"))
+        seen_keys = {primary_key} if primary_key else set()
+        for sel in d["marathons_selected"]:
+            key = canonical_marathon_key(sel)
+            if key is None or key in seen_keys:
+                continue
+            sel_date = resolve_race_date(sel, year)
+            if not sel_date:
+                continue
+            seen_keys.add(key)
+            sec.append(MarathonRaceIn(name=str(sel).strip(), date=sel_date))
     if sec:
         d["secondary_races"] = [r.model_dump() for r in sec]
 

@@ -98,6 +98,7 @@ class TuneUpResultPayload(BaseModel):
     distance_m: float
     time_s: int
     new_vdot: float
+    race_date: str | None = None  # ISO date the tune-up was run; freshens the dossier fitness anchor
 
 
 class CoachNotePayload(BaseModel):

@@ -85,7 +85,8 @@ Override form id: ``Z2TC_INTAKE_FORM_ID=... python scripts/update_marathon_intak
 11. **Long run day** (multiple choice, single answer) — default **Saturday** only option: “Saturday (club long run)”  
 12. **Injury history or current niggles** (paragraph, optional)  
 13. **Daniels vs Pfitzinger** (multiple choice: Auto / Prefer Daniels / Prefer Pfitzinger) — default Auto  
-14. **Anything else for the coach** (paragraph, optional)  
+14. **Have you completed a marathon before?** (yes/no) → `returning_marathoner` — when yes, merge anchors block metrics on Strava's latest marathon and applies fitness/volume decay  
+15. **Anything else for the coach** (paragraph, optional)  
 
 ### Section E — Closing (optional; coach / deliverables, not the numeric engine)
 
