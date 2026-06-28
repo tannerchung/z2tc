@@ -4,13 +4,27 @@ Deterministic marathon block builder: **VDOT → paces → weekly structure** (D
 
 ## Entry point
 
-[`engine/plan/__init__.py`](../../engine/plan/__init__.py) exports `build_plan`:
+[`engine/plan/__init__.py`](../../engine/plan/__init__.py) exports `build_plan` (pure) and `build_club_plan` (club):
 
 1. `resolve_intake_defaults(inputs)` — fills optional preference slugs (`engine/plan/intake.py`).
 2. `assign_method(inputs)` — auto `daniels` vs `pfitzinger` from `p_history` + `days_per_week` (override via `inputs.method`; includes `higdon` / `hanson`).
 3. `training_paces(inputs.vdot)` — Daniels table-backed paces (`engine/paces.py`).
 4. Dispatch to `build_daniels_plan`, `build_pfitzinger_plan`, `build_higdon_plan`, or `build_hanson_plan`.
 5. Optional: `emit_peak_scenarios` (Daniels) sets `PlanScenarioMeta` + sibling plans at **P+5** / **P+10**; `append_post_marathon_recovery` appends five recovery weeks (`common.append_post_marathon_recovery`, Pfitz p.290).
+
+### Pure engine vs club engine
+
+`build_plan` and the generators are **pure** — textbook by default (Daniels = a single midweek quality, aerobic Phase I Base, the 30%/25% long-run share), same inputs → same plan. Every club opinion lives in **one** place, [`engine/plan/club.py`](../../engine/plan/club.py): the declarative `ClubPolicy` dataclass + `apply_club_policy(inputs, policy=CLUB_POLICY)`, with `build_club_plan(inputs) = build_plan(apply_club_policy(inputs))`. Today's `ClubPolicy`:
+
+- **Two quality efforts per build week** (`weekday_quality_sessions = 2`) vs Daniels' single midweek quality.
+- **`base_quality_ramp`** — ease that second quality into the Base phase (instead of an aerobic-only Base).
+- **`long_run_share_cap = 0.50`** — allow the long run up to 50% of the week (textbook is 30%/25%), so a low-mileage / 3-day athlete still reaches a real long run; the time-on-feet and 18-mi ceilings still bound it (`common.daniels_long_run(..., share_cap=...)`).
+- **`allow_aggressive_ramp = False`** — the club's default stance on the volume ramp. `False` keeps the textbook 3-week hold (`weekly_volumes(hold_weeks=3)`); a coach opts an athlete into the faster ramp per-athlete (`aggressive_volume_ramp = True`, +1 mi/running-day every week). Flip the policy to ramp the whole club faster.
+- **`schedule_tune_ups = True`** — drop a short/sharp **5K → 10K → 10K** checkpoint ladder into the build. **Daniels plans get it by default** (an empirical mid-block race is the club's preferred way to refine VDOT/paces, on-track goal or not); **other methods** get the club ladder only when the goal needs a VDOT the athlete hasn't demonstrated (a buffer worth verifying), so an in-reach non-Daniels goal gets none. `_default_tune_ups` turns the readiness [`tune_up_ladder`](../../engine/readiness.py) into `TuneUpRace` specs; a coach can pre-set `tune_up_races` (including `()` for "no tune-ups"). The race-prep rung is a **10K, not a half marathon** — both Pfitzinger (ch.8 caps late tune-ups at 8–10K) and Higdon (his half sits ~9–10 wk out, never near the taper) keep the closest-in race short so it doesn't cost the recovery a peak long-run block needs.
+
+**Tune-up placement is a method-agnostic club post-process, not generator code.** `place_tune_up_races(plan, inputs)` (in `engine/plan/club.py`, run by `build_club_plan` after `build_plan`) seats each `TuneUpRace` on its week's long-run slot as a `RACE` on a mini-cutback week (≈0.85× volume, the race is the week's only quality), rebuilding the week with `common.assemble_week` so it works for **every** method — not just Daniels. It searches outward for an open build week (skips down/taper/marathon weeks). When the method already races mid-block (Pfitzinger/Higdon prescribe native tune-ups) the club does **not** double-schedule — it leaves the book's races where they are and instead **annotates** each with the same goal-linked target (`_annotate_native_tune_ups`: on-track + realistic time at the native race's distance/week). The recorded result later folds back via the `TuneUpResult` event (`record-tune-up`). See the [tune-up race ladder](athlete-readiness.md).
+
+**Precedence is strict: explicit coach choice (event-folded inputs) > club policy > textbook default.** The resolver only fills fields the coach left unset, so override-able inputs are **tri-state `Optional`** (`None` = unset → club resolves; `True`/`False`/value = explicit coach choice that survives). **Production builds club plans** (the CLI `build-plan` / `start-season`, and `replan` / `resolve_inputs`); the pure engine stays available for tests and book-faithful single-author output. Bump `ClubPolicy.version` when the rules change so stored plans can be reasoned about against the policy that built them. **New cross-cutting club rules belong here, never in a generator.**
 
 ## Shared building blocks
 

@@ -19,6 +19,7 @@ from . import pfitz_grids
 from .models import (
     AthleteInputs,
     DAY_NAMES,
+    GridCell,
     MARATHON_M,
     PlannedDay,
     PlannedWeek,
@@ -31,6 +32,26 @@ from .models import (
 
 TAPER_WEEKS = 3
 LR = common.LONG_RUN_DAY
+
+def _seat_long_run_on_club_day(grid_row: list[GridCell]) -> list[GridCell]:
+    """Shift a ch.8 grid week one day earlier so the long run lands on the club's Saturday.
+
+    Pfitzinger's grid (``pfitz_grids``) is transcribed verbatim with the week running Monday→Sunday:
+    a Monday rest, the long run last (Sunday), and on tune-up weeks the race the day *before* the long
+    run. The club runs its long run on Saturday like every other engine path. Rotating the week left
+    by one day moves the long run Sunday→Saturday and the Monday rest→Sunday while preserving every
+    *relative* relationship Pfitzinger built — the recovery day before the long run, the spacing
+    between quality sessions, and the race→long-run order (Table 3.1, pp.112-113: a long run needs no
+    recovery gap from a different workout type because they tax different systems). A plain Sat/Sun
+    swap would instead invert that order (long run before the race) and collapse the pre-long-run
+    recovery day, so we shift rather than swap.
+
+    The goal-marathon week is left untouched so the marathon stays on its actual (Sunday) race date.
+    """
+    last = grid_row[-1]
+    if last.kind == WorkoutKind.RACE and (last.miles or 0) > 20:  # goal-marathon week
+        return grid_row
+    return grid_row[1:] + grid_row[:1]
 
 # Pfitzinger's tiered schedules: (peak_mpw, week-1 mpw, week-1 long run, label). Week-1 figures
 # come from each chapter's "Before Starting the Schedules" readiness example (p.285/302/320/338).
@@ -136,7 +157,7 @@ def build_pfitzinger_plan(inputs: AthleteInputs, paces: dict) -> TrainingPlan:
 
         if use_ch8_spine:
             days: list[PlannedDay] = []
-            grid_row = pfitz_grids.CH8_18WK_GRID[i]
+            grid_row = _seat_long_run_on_club_day(pfitz_grids.CH8_18WK_GRID[i])
             for day, cell in zip(DAY_NAMES, grid_row):
                 w = cell.to_workout(paces, mp_s, mp_str, easy_s, easy_str)
                 if w.kind == WorkoutKind.RACE:
@@ -148,6 +169,11 @@ def build_pfitzinger_plan(inputs: AthleteInputs, paces: dict) -> TrainingPlan:
                             week_flags.append("tune-up race (8-10K) recommended this week; recompute VDOT after")
                         else:
                             week_flags.append("tune-up race (8-15K) recommended this week; recompute VDOT after")
+                        week_flags.append(
+                            "tune-up sits Friday, the day before the Saturday long run (Pfitzinger's "
+                            "race-then-long-run pairing) — move it to the race's actual date if it "
+                            "differs and keep that day's run easy"
+                        )
                 elif "dress rehearsal" in (w.label or "").lower():
                     w.flags.append("dress_rehearsal")
                 days.append(PlannedDay(day, w))

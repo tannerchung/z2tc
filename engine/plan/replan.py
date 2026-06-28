@@ -6,7 +6,7 @@ import json
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from engine.plan import build_plan
+from engine.plan import apply_club_policy, build_club_plan
 from engine.plan.models import AthleteInputs, TrainingPlan
 
 from store.events import (
@@ -101,9 +101,14 @@ def _apply_payload(inputs: AthleteInputs, payload: Any) -> AthleteInputs:
     return inputs
 
 
-def fold_events_to_inputs(baseline: AthleteInputs, store: Store, athlete_id: str) -> tuple[AthleteInputs, list[str]]:
-    """Apply approved/applied events to ``baseline``; return working inputs + provenance flags."""
-    rows = store.list_events(athlete_id)
+def fold_events_to_inputs(
+    baseline: AthleteInputs, store: Store, athlete_id: str, *, season_id: str | None = None
+) -> tuple[AthleteInputs, list[str]]:
+    """Apply approved/applied events to ``baseline``; return working inputs + provenance flags.
+
+    Events are read from the athlete's active season unless ``season_id`` is given.
+    """
+    rows = store.list_events(athlete_id, season_id=season_id)
     parsed: list[tuple[str, Any]] = []
     for r in rows:
         if r["status"] == "proposed" or r["status"] == "rejected":
@@ -165,9 +170,20 @@ def fold_events_to_inputs(baseline: AthleteInputs, store: Store, athlete_id: str
     return cur, extra_flags
 
 
-def replan(baseline: AthleteInputs, store: Store, athlete_id: str) -> TrainingPlan:
-    """Load events for ``athlete_id``, fold into baseline, ``build_plan``."""
-    cur, extra_flags = fold_events_to_inputs(baseline, store, athlete_id)
-    plan = build_plan(cur)
+def replan(
+    baseline: AthleteInputs, store: Store, athlete_id: str, *, season_id: str | None = None
+) -> TrainingPlan:
+    """Load events for ``athlete_id`` (active season unless ``season_id``), fold, ``build_plan``."""
+    cur, extra_flags = fold_events_to_inputs(baseline, store, athlete_id, season_id=season_id)
+    plan = build_club_plan(cur)
     plan.flags = list(plan.flags) + extra_flags
     return plan
+
+
+def resolve_inputs(
+    baseline: AthleteInputs, store: Store, athlete_id: str, *, season_id: str | None = None
+) -> AthleteInputs:
+    """The folded ``AthleteInputs`` that ``replan`` builds from (no plan). For artifact snapshots.
+    Includes the club policy resolution so the snapshot matches the plan that ``replan`` produces."""
+    cur, _ = fold_events_to_inputs(baseline, store, athlete_id, season_id=season_id)
+    return apply_club_policy(cur)

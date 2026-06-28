@@ -256,10 +256,14 @@ def test_daniels_full_plan():
     race_days = [d.day for d in last.days if d.workout.kind == WorkoutKind.RACE]
     assert race_days == [common.LONG_RUN_DAY]
 
-    # Quality (non-down, non-base/taper) weeks carry exactly two quality sessions.
+    # Pure Daniels (no club policy): the long run + a single midweek quality make two quality
+    # sessions in the Threshold/Race-Prep build weeks, and the Base phase stays aerobic.
     for w in plan.weeks:
         if w.phase in ("Threshold", "Race Prep") and not w.is_down_week:
             assert len(w.quality_days) == 2, f"week {w.index} ({w.label})"
+        if w.phase == "Base" and not w.is_down_week:
+            weekday_quality = [d for d in w.days if d.day != common.LONG_RUN_DAY and d.workout.is_quality]
+            assert not weekday_quality, f"pure Base week {w.index} should stay aerobic"
         # No prescribed week exceeds the athlete's peak by more than rounding.
         assert w.target_miles <= plan.peak_miles + 0.05
 
@@ -329,6 +333,33 @@ def test_workout_catalog_dictionary_is_complete():
         built = w.build(ctx)
         explained = explain_workout_label(built.label)
         assert explained and explained != built.label, f"{w.key}: {built.label!r}"
+
+
+def test_glossary_decodes_every_method_label():
+    # Cross-method coverage: every workout label any generator emits (Daniels rotation + the
+    # Pfitzinger / Hansons / Higdon grids) must decode to a coach-readable explanation — no raw
+    # grid label should leak through the glossary onto an athlete's sheet.
+    from render.workout_glossary import explain_workout_label
+
+    athletes = [
+        _daniels_athlete(),
+        _pfitz_athlete(w_now=30.0, p_history=42.0, method=common.PFITZINGER),
+        _daniels_athlete(method=common.HIGDON, higdon_program="novice2", days_per_week=4, longest_run_mi=20.0),
+        _daniels_athlete(method=common.HANSON, hanson_program="beginner", days_per_week=6),
+    ]
+    undecoded: list[str] = []
+    for a in athletes:
+        plan = build_plan(a)
+        for w in plan.weeks:
+            for d in w.days:
+                if d.workout.kind == WorkoutKind.REST:
+                    continue
+                label = d.workout.label or ""
+                if not label.strip():
+                    continue
+                if explain_workout_label(label) == label:
+                    undecoded.append(f"{a.method}: {label!r}")
+    assert not undecoded, "labels leaked through the glossary undecoded:\n" + "\n".join(sorted(set(undecoded)))
 
 
 def test_taper_uses_race_pace_sharpener():
@@ -584,11 +615,16 @@ def test_verbatim_grids_reproduction():
     plan_pfitz = build_plan(a_pfitz)
     assert plan_pfitz.method == common.PFITZINGER
     assert len(plan_pfitz.weeks) == 18
-    # Week 12 Saturday should be tune-up race
-    assert plan_pfitz.weeks[11].days[5].workout.kind == WorkoutKind.RACE
-    assert "tune_up_race" in plan_pfitz.weeks[11].days[5].workout.flags
-    # Week 18 Wednesday should be dress rehearsal
+    # Week 12: the book pairs a Saturday tune-up with a Sunday long run. The club runs its long run on
+    # Saturday, so the engine shifts the whole week one day earlier — long run → Saturday, tune-up →
+    # Friday (the day before), preserving Pfitzinger's race-then-long-run order. Sunday becomes rest.
+    assert plan_pfitz.weeks[11].days[5].workout.kind == WorkoutKind.LONG
+    assert plan_pfitz.weeks[11].days[4].workout.kind == WorkoutKind.RACE
+    assert "tune_up_race" in plan_pfitz.weeks[11].days[4].workout.flags
+    assert plan_pfitz.weeks[11].days[6].workout.kind == WorkoutKind.REST
+    # Week 18 (race week) is not shifted: dress rehearsal stays Wednesday, marathon stays Sunday.
     assert "dress_rehearsal" in plan_pfitz.weeks[17].days[2].workout.flags
+    assert plan_pfitz.weeks[17].days[6].workout.kind == WorkoutKind.RACE
 
     # Test Hanson Beginner verbatim reproduction
     a_hanson = _daniels_athlete(method=common.HANSON, hanson_program="beginner", days_per_week=6)
@@ -602,4 +638,22 @@ def test_verbatim_grids_reproduction():
     assert len(tue_w.segments) == 1
     assert tue_w.segments[0].reps == 12
     assert tue_w.segments[0].distance_m == 400.0
+
+
+def test_pfitz_grid_long_run_on_club_saturday():
+    """The ch.8 grid is transcribed with Sunday long runs; the engine reseats every weekend
+    endurance anchor onto the club's Saturday, leaving only the goal-marathon race week on Sunday."""
+    plan = build_plan(_pfitz_athlete())
+    long_kinds = {WorkoutKind.LONG, WorkoutKind.MEDIUM_LONG, WorkoutKind.MARATHON_PACE}
+    for wk in plan.weeks:
+        sat = wk.days[5].workout
+        sun = wk.days[6].workout
+        if wk.index == len(plan.weeks):  # race week: marathon stays on its calendar day
+            assert sun.kind == WorkoutKind.RACE
+            continue
+        # the week's longest endurance run is on Saturday, never Sunday
+        assert sun.kind not in long_kinds, f"week {wk.index} still has a Sunday long run"
+        weekend_long = [d.workout for d in (wk.days[5], wk.days[6]) if d.workout.kind in long_kinds]
+        if weekend_long:
+            assert sat.kind in long_kinds, f"week {wk.index} long run not on Saturday"
 

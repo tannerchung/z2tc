@@ -1,20 +1,19 @@
 """Workout catalog + purposeful rotation (deterministic).
 
-Two things live here:
+The **z2tc rotation catalog** — the named, varied sessions the Daniels generator rotates
+through so a block is not three workouts on repeat (cruise intervals / VO2max / "marathon
+long run"). Each entry is a small builder over a :class:`WeekContext`, grouped into ordered
+per-phase rotations. "Rotate with purpose" means the order is **deterministic and
+phase-appropriate**, not random: the Threshold phase cycles T-pace formats (same lactate
+stimulus, different feel); Race Prep cycles VO2max/Rep sharpeners; and the long run climbs in
+specificity (Daniels' E/M/T blend → marathon-pace blocks → fast finish). The generator owns
+*when* to call a rotation (e.g. deferring VO2max off mileage step-up weeks); this module owns
+*what* the rotation contains. Keeping the catalog here (not inline in ``daniels.py``) means the
+sheet's Workout Dictionary is generated from the same source the engine runs (no drift).
 
-1. ``CATALOG`` — the legacy SOS template ids referenced by the verbatim grids (Hansons /
-   Pfitzinger SOS labels with book citations). Unchanged.
-
-2. The **z2tc rotation catalog** — the named, varied sessions the Daniels generator rotates
-   through so a block is not three workouts on repeat (cruise intervals / VO2max / "marathon
-   long run"). Each entry is a small builder over a :class:`WeekContext`, grouped into ordered
-   per-phase rotations. "Rotate with purpose" means the order is **deterministic and
-   phase-appropriate**, not random: the Threshold phase cycles T-pace formats (same lactate
-   stimulus, different feel); Race Prep cycles VO2max/Rep sharpeners; and the long run climbs in
-   specificity (Daniels' E/M/T blend → marathon-pace blocks → fast finish). The generator owns
-   *when* to call a rotation (e.g. deferring VO2max off mileage step-up weeks); this module owns
-   *what* the rotation contains. Keeping the catalog here (not inline in ``daniels.py``) means the
-   sheet's Workout Dictionary is generated from the same source the engine runs (no drift).
+The grid methods (Pfitzinger / Hansons / Higdon) don't use this rotation — they emit their own
+verbatim labels — but every label any generator produces decodes through
+``render.workout_glossary.explain_workout_label`` (cross-method coverage is locked by tests).
 
 Sources behind the variety: Daniels' T (tempo vs cruise vs broken-T), I (intervals, pyramid,
 descending) and R menus (Running Formula ch.4 / Table 4.2), plus the standard marathon long-run
@@ -29,22 +28,6 @@ from dataclasses import dataclass
 
 from . import common
 from .models import Workout
-
-
-@dataclass(frozen=True)
-class WorkoutTemplate:
-    coach: str
-    key: str
-    label: str
-    citation: str
-
-
-CATALOG: tuple[WorkoutTemplate, ...] = (
-    WorkoutTemplate("hanson", "speed_ladder", "SOS Speed ladder (400–1200m)", "Hansons pp.76–82"),
-    WorkoutTemplate("hanson", "strength_mp10", "SOS Strength @ MP−10s/mi", "Hansons pp.88–94"),
-    WorkoutTemplate("hanson", "tempo_mp", "SOS Tempo @ goal MP", "Hansons p.100"),
-    WorkoutTemplate("daniels", "threshold_cruise", "Threshold / cruise intervals", "Daniels Table 4.2 p.69"),
-)
 
 
 # --- Rotation catalog ------------------------------------------------------------
@@ -129,6 +112,10 @@ def _mp_reps(c: WeekContext) -> Workout:
     return common.mp_reps_workout(min(c.caps["M"], 3.0), c.mp_s, c.mp_str)
 
 
+def _mp_run(c: WeekContext) -> Workout:
+    return common.marathon_pace_run(c.caps["M"], c.mp_s, c.mp_str)
+
+
 def _mp_blend(c: WeekContext) -> Workout:
     return common.marathon_q1_workout(
         c.long_mi, c.caps["M"], c.mp_s, c.mp_str,
@@ -163,71 +150,74 @@ def _long_fartlek(c: WeekContext) -> Workout:
 CATALOG_WORKOUTS: tuple[CatalogWorkout, ...] = (
     # --- Threshold (T): comfortably-hard, lactate-clearance. Pace = VDOT T; volume ≤ 10% week.
     CatalogWorkout("cruise_mile", "Cruise intervals", "T",
-                   "Mile threshold repeats with short 60 s jogs — bank T volume above a 20-min tempo (Daniels p.67).",
+                   "Mile threshold repeats with short 60 s jogs that bank T volume above a 20-min tempo (Daniels p.67).",
                    "reps = (10%-week T cap) ÷ 1 mi, at VDOT threshold pace, 60 s jog between.", _cruise_mile),
     CatalogWorkout("tempo", "Tempo run", "T",
-                   "One continuous comfortably-hard effort at threshold — confidence + lactate clearance (Daniels).",
+                   "One continuous comfortably-hard effort at threshold for confidence and lactate clearance (Daniels).",
                    "single block capped at ~20 min (T cap if shorter), at VDOT threshold pace.", _tempo),
-    CatalogWorkout("broken_t", "Cruise intervals (broken-T)", "T",
-                   "Half-mile threshold repeats — more reps, same T stimulus, sharper feel (Daniels).",
+    CatalogWorkout("broken_t", "Broken-T intervals", "T",
+                   "Half-mile threshold repeats for more reps at the same T stimulus with a sharper feel (Daniels).",
                    "reps = T cap ÷ 0.5 mi, at VDOT threshold pace, 60 s jog.", _broken_t),
     CatalogWorkout("over_unders", "Over/unders", "T",
-                   "Alternate threshold (over) and marathon pace (under), nonstop — rhythm changes at race paces (Runna).",
+                   "Alternate threshold (over) and marathon pace (under), nonstop, for rhythm changes at race paces (Runna).",
                    "≈ T-cap reps of 0.5 mi @ T / 0.5 mi @ goal MP, nonstop.", _over_unders),
     CatalogWorkout("tempo_ladder", "Threshold ladder", "T",
-                   "Descending threshold blocks (long → short) with 60 s jogs — same T effort, varied shape (Runna 2-1-1).",
+                   "Descending threshold blocks (long to short) with 60 s jogs for the same T effort in a varied shape (Runna 2-1-1).",
                    "T cap split 50/25/25 into 3 blocks at VDOT threshold pace, 60 s jog.", _tempo_ladder),
     # --- Interval (I): VO2max / aerobic power. Pace = VDOT I; volume ≤ 8% week (≤10 km).
     CatalogWorkout("vo2_intervals", "VO2max intervals", "I",
-                   "1000 m reps at ~5K effort, equal-time jog — VO2max / aerobic power (Daniels I).",
+                   "1000 m reps at about 5K effort with equal-time jog for VO2max and aerobic power (Daniels I).",
                    "reps = (8%-week I cap) ÷ 1000 m, at VDOT interval pace, equal-time jog.", _vo2_intervals),
     CatalogWorkout("vo2_1200", "VO2max intervals (1200s)", "I",
-                   "1200 m reps at I pace — Daniels' preferred VO2max rep for slower runners (3–5 min work).",
+                   "1200 m reps at I pace, Daniels' preferred VO2max rep for slower runners (3 to 5 min work).",
                    "reps = I cap ÷ 1200 m, at VDOT interval pace, equal-time jog.", _vo2_1200),
     CatalogWorkout("vo2_pyramid", "VO2max pyramid", "I",
-                   "400-800-1200-800-400 m pyramid at I pace — same VO2max stimulus, varied rep length.",
+                   "400-800-1200-800-400 m pyramid at I pace for the same VO2max stimulus in varied rep lengths.",
                    "fixed pyramid (~3.6 km work) at VDOT interval pace, equal-time jog; wu/cd absorbs cap.", _vo2_pyramid),
     CatalogWorkout("descending_i", "Descending intervals", "I",
-                   "1200-1000-800-600-400 m at I pace — shortening reps keep pace honest as fatigue builds.",
+                   "1200-1000-800-600-400 m at I pace, where shortening reps keep pace honest as fatigue builds.",
                    "fixed descending set at VDOT interval pace, equal-time jog.", _descending_i),
     CatalogWorkout("drop_set", "Drop set", "I",
-                   "1000-800-600-400-200 m descending ladder at I pace — short, sharp, fast finish (Runna).",
+                   "1000-800-600-400-200 m descending ladder at I pace, short and sharp with a fast finish (Runna).",
                    "fixed drop ladder at VDOT interval pace, equal-time jog.", _drop_set),
     # --- Repetition (R): speed + economy. Pace = VDOT R; volume ≤ 5% week (≤5 mi).
     CatalogWorkout("speed_reps", "Speed reps", "R",
-                   "Short fast 400 m reps at Rep pace, full recovery — speed + running economy (Daniels R).",
+                   "Short fast 400 m reps at Rep pace with full recovery for speed and running economy (Daniels R).",
                    "reps = (5%-week R cap) ÷ 400 m, at VDOT rep pace, full 400 m jog.", _speed_reps),
     CatalogWorkout("short_reps", "Speed reps (200s)", "R",
-                   "200 m reps at Rep pace — pure turnover / neuromuscular work (Daniels p.135).",
+                   "200 m reps at Rep pace for pure turnover and neuromuscular work (Daniels p.135).",
                    "reps = R cap ÷ 200 m (≥8), at VDOT rep pace, full 200 m jog.", _short_reps),
     CatalogWorkout("rolling_400s", "Rolling 400s", "R",
-                   "400 m reps at Rep pace with only a 200 m jog float — continuous rhythm/turnover (Runna).",
+                   "400 m reps at Rep pace with only a 200 m jog float for continuous rhythm and turnover (Runna).",
                    "reps = R cap ÷ 400 m, at VDOT rep pace, short 200 m jog (no full recovery).", _rolling_400s),
     # --- Marathon pace (M): goal-pace rehearsal. Pace = goal MP (from A-goal time).
     CatalogWorkout("mp_reps", "Race-pace reps", "M",
-                   "Short half-mile reps at goal marathon pace, 60 s jog — low-fatigue race-rhythm rehearsal for the taper (Runna).",
+                   "Short half-mile reps at goal marathon pace with 60 s jog, a low-fatigue race-rhythm rehearsal for the taper (Runna).",
                    "reps = (trimmed M cap, ≤3 mi) ÷ 0.5 mi, at goal MP, 60 s jog.", _mp_reps),
+    CatalogWorkout("mp_run", "Race-pace run", "M",
+                   "Continuous goal-marathon-pace miles, a midweek race-practice run for goal pace, rhythm and fueling (Pfitzinger MP; Higdon pace run).",
+                   "min(M cap, 6 mi) continuous at goal MP, with an easy warm-up and cool-down.", _mp_run),
     # --- Long runs: sized by daniels_long_run (time-on-feet / 30-25% share / 18-mi cap).
     CatalogWorkout("long_easy", "Long run (easy)", "long",
-                   "Steady aerobic long run — time on feet, durability (all four authors' staple).",
+                   "Steady aerobic long run for time on feet and durability (all four authors' staple).",
                    "distance = min(3 h time-on-feet at observed long pace, 18 mi, 30–25% of week); all easy.", _long_easy),
     CatalogWorkout("long_fartlek", "Long run w/ fartlek", "long",
-                   "Easy long run with brief ~1 min surges sprinkled in — light turnover, breaks up the run (Humphrey).",
+                   "Easy long run with brief ~1 min surges sprinkled in for light turnover that breaks up the run (Humphrey).",
                    "same easy long-run distance; ~one 1-min surge per 1.5 mi (stays an aerobic day).", _long_fartlek),
     CatalogWorkout("mp_blend", "Marathon long run", "long",
-                   "Daniels 2Q nonstop E/M/(T)/M/E blend — race-pace volume inside the long run (Table 14.3).",
+                   "Daniels 2Q nonstop E/M/(T)/M/E blend that banks race-pace volume inside the long run (Table 14.3).",
                    "long-run distance; ~half at goal MP (≤ M cap) with a 1-mi T surge, rest easy.", _mp_blend),
     CatalogWorkout("progression", "Progression long run", "long",
-                   "Thirds: easy → steady → marathon pace — pacing discipline, low-risk strong finish (Humphrey/Higdon 3/1).",
-                   "long-run distance split in thirds: easy, steady (E↔MP midpoint), goal MP.", _progression),
+                   "Thirds that build easy to steady to marathon pace for pacing discipline and a low-risk strong finish (Humphrey/Higdon 3/1).",
+                   "long-run distance split in thirds, easy then steady (E↔MP midpoint) then goal MP.", _progression),
     CatalogWorkout("mp_blocks", "Marathon-pace blocks", "long",
-                   "Two MP blocks split by an easy float — race rhythm + fueling rehearsal, more banked MP (Runna 'Block').",
+                   "Two MP blocks split by an easy float for race rhythm, fueling rehearsal and more banked MP (Runna 'Block').",
                    "long-run distance; 2 × (≈25%, ≤ M cap/2) blocks at goal MP, 1-mi easy float, easy wu/cd.", _mp_blocks),
     CatalogWorkout("fast_finish", "Fast-finish long run", "long",
-                   "Mostly easy, closed at marathon pace — late-race grit, kept controlled (McMillan; Humphrey).",
+                   "Mostly easy and closed at marathon pace for late-race grit, kept controlled (McMillan; Humphrey).",
                    "long-run distance; final block (≤ M cap, ≤40%) at goal MP, rest easy.", _fast_finish),
     CatalogWorkout("race_practice", "Race-practice long run", "long",
-                   "Dress rehearsal: one sustained MP block (the build's longest) — goal pace, fueling + kit (Pfitzinger; Runna).",
+                   "A dress rehearsal with one sustained MP block (the build's longest) for goal pace, fueling and kit (Pfitzinger; Runna).",
                    "long-run distance; one continuous MP block = min(M cap, distance − 3 mi), easy wu/cd.", _race_practice),
 )
 
@@ -237,6 +227,10 @@ _BY_KEY = {w.key: w for w in CATALOG_WORKOUTS}
 # generator) decides the position — so the same week always yields the same session. Q1 (long run)
 # only ever pulls from the "long" role; Q2 (midweek) pulls T in the Threshold phase and the
 # I/R sharpeners in Race Prep.
+# Base-phase midweek quality, eased in: lead with low-fatigue Reps (R — speed/economy, full
+# recovery; Daniels' Phase II staple) before a short Threshold, so the first quality of the block
+# is gentle on a rebuilding aerobic base.
+BASE_Q2: tuple[str, ...] = ("speed_reps", "cruise_mile", "tempo")
 THRESHOLD_Q2: tuple[str, ...] = ("cruise_mile", "tempo", "broken_t", "over_unders", "tempo_ladder")
 RACE_PREP_Q2: tuple[str, ...] = ("vo2_intervals", "drop_set", "vo2_pyramid", "vo2_1200",
                                  "descending_i", "rolling_400s", "speed_reps")
@@ -249,6 +243,10 @@ LONG_RUN: dict[str, tuple[str, ...]] = {
     "Threshold": ("mp_blend", "progression"),
     "Race Prep": ("mp_blocks", "fast_finish", "mp_blend"),
 }
+
+
+def base_q2(occ: int, ctx: WeekContext) -> Workout:
+    return _BY_KEY[BASE_Q2[occ % len(BASE_Q2)]].build(ctx)
 
 
 def threshold_q2(occ: int, ctx: WeekContext) -> Workout:

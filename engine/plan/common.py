@@ -216,7 +216,9 @@ class LongRun:
     flags: list[str] = field(default_factory=list)
 
 
-def daniels_long_run(weekly_miles: float, easy_pace_s: float, marathon_build: bool = True) -> LongRun:
+def daniels_long_run(
+    weekly_miles: float, easy_pace_s: float, marathon_build: bool = True, share_cap: float | None = None
+) -> LongRun:
     """Long run length, governed by **time on feet** (sec.4).
 
     The lesser of: the time-on-feet ceiling, an 18-mi distance cap, and the 30%/25%-of-week
@@ -240,7 +242,10 @@ def daniels_long_run(weekly_miles: float, easy_pace_s: float, marathon_build: bo
     """
     time_cap_mi = LONG_RUN_CAP_MIN * 60.0 / easy_pace_s          # Daniels 150-min anchor
     window_cap_mi = LONG_RUN_WINDOW_MIN[1] * 60.0 / easy_pace_s  # Hanson 3 h productive ceiling
-    share_pct = 0.30 if weekly_miles <= 40 else 0.25            # Daniels p.64 tier
+    # Textbook tier (Daniels p.64): long run is 30%/25% of the week. ``share_cap`` (club policy) lets
+    # the long run be a larger fraction — e.g. a 3-day/low-mileage athlete needs ~50% to reach a real
+    # long run — without touching the time-on-feet / 18-mi ceilings that still bound it.
+    share_pct = share_cap if share_cap is not None else (0.30 if weekly_miles <= 40 else 0.25)
     share_mi = share_pct * weekly_miles
     third = weekly_miles / 3.0
 
@@ -273,6 +278,7 @@ def coach_long_run_targets(
     cap_mi: float,
     peak_weeks: int,
     easy_pace_s: float,
+    share_cap: float | None = None,
 ) -> dict[int, float]:
     """Per-week long-run distances for the ``long_run_cap_mi`` coach override (monitored).
 
@@ -290,7 +296,7 @@ def coach_long_run_targets(
     nondown = [wk for wk in range(1, build_n + 1) if wk % 4 != 0]
     if not nondown:
         return targets
-    start = min(daniels_long_run(vols[0], easy_pace_s).recommended_mi, cap_mi)
+    start = min(daniels_long_run(vols[0], easy_pace_s, share_cap=share_cap).recommended_mi, cap_mi)
     peak_weeks = max(1, min(peak_weeks, len(nondown)))
     climb_n = len(nondown) - peak_weeks
     for j, wk in enumerate(nondown):
@@ -301,7 +307,7 @@ def coach_long_run_targets(
             targets[wk] = round(start + (cap_mi - start) * frac, 1)
     for wk in range(1, build_n + 1):
         if wk % 4 == 0:  # down week → book cutback long, not a near-peak effort
-            targets[wk] = daniels_long_run(vols[wk - 1], easy_pace_s).recommended_mi
+            targets[wk] = daniels_long_run(vols[wk - 1], easy_pace_s, share_cap=share_cap).recommended_mi
     return targets
 
 
@@ -386,6 +392,17 @@ def midweek_quality_day(days_per_week: int) -> str:
     return QUALITY_DAY_BY_COUNT.get(max(3, min(7, days_per_week)), QUALITY_DAY_BY_COUNT[4])
 
 
+# Second midweek quality day (used when ``weekday_quality_sessions`` >= 2): a run day separated
+# from the Q2 day by an easy/rest day and kept off the day right before the Saturday long run
+# (a rest day there protects the long run) — e.g. at 4 days Tue (Q2) + Thu, Wed easy/rest between.
+SECOND_QUALITY_DAY_BY_COUNT = {3: "Mon", 4: "Thu", 5: "Mon", 6: "Mon", 7: "Mon"}
+
+
+def second_midweek_quality_day(days_per_week: int) -> str:
+    """The day for the optional 2nd midweek quality session (well clear of Q2 and the long run)."""
+    return SECOND_QUALITY_DAY_BY_COUNT.get(max(3, min(7, days_per_week)), SECOND_QUALITY_DAY_BY_COUNT[4])
+
+
 def easy_pace(paces: dict) -> tuple[int, str]:
     """Midpoint of the Easy/Long range, in seconds and formatted (used for long-run
     time-cap math and easy days)."""
@@ -443,7 +460,10 @@ def threshold_workout(
         reps = max(2, round(work / max(0.25, rep_mi)))
         per = round(work / reps, 1)
         seg = Segment(reps=reps, pace_label="T", pace_s=pace_s, distance_m=round(per * METERS_PER_MILE), recovery="60 s jog")
-        label = _prescribe("Cruise intervals", f"{reps} x {per:g} mi @ Threshold ({pace_str}/mi) w/ 60 s jog")
+        # Half-mile (broken-T) repeats read as a distinct session from mile cruise intervals so the
+        # rotation doesn't look like "all cruise intervals" on the sheet.
+        name = "Broken-T intervals" if per <= 0.6 else "Cruise intervals"
+        label = _prescribe(name, f"{reps} x {per:g} mi @ Threshold ({pace_str}/mi) w/ 60 s jog")
         total = work
     return Workout(
         WorkoutKind.THRESHOLD,
@@ -582,6 +602,25 @@ def mp_reps_workout(cap_mi: float, mp_s: int, mp_str: str, *, rep_mi: float = 0.
         WorkoutKind.MARATHON_PACE,
         _prescribe("Race-pace reps", f"{reps} x {rep_mi:g} mi @ MP ({mp_str}/mi) w/ 60 s jog"),
         distance_mi=round(work_mi + WARMUP_MI + COOLDOWN_MI, 1),
+        pace=mp_str,
+        pace_s=mp_s,
+        segments=[seg],
+    )
+
+
+MP_RUN_MAX_MI = 6.0  # midweek goal-pace run stays a midweek session, not a second long run
+
+
+def marathon_pace_run(cap_mi: float, mp_s: int, mp_str: str, *, max_mi: float = MP_RUN_MAX_MI) -> Workout:
+    """Continuous goal marathon-pace run — a midweek "race practice" session that rehearses goal
+    pace, rhythm and fueling. Bounded by the M cap and ``max_mi`` so it stays a midweek run rather
+    than a second long run (Pfitzinger midweek MP; Higdon "pace" run on a low-frequency load)."""
+    work = max(3.0, round(min(cap_mi, max_mi), 1))
+    seg = Segment(reps=1, pace_label="M", pace_s=mp_s, distance_m=round(work * METERS_PER_MILE))
+    return Workout(
+        WorkoutKind.MARATHON_PACE,
+        _prescribe("Race-pace run", f"{work:g} mi @ MP ({mp_str}/mi) continuous"),
+        distance_mi=round(work + WARMUP_MI + COOLDOWN_MI, 1),
         pace=mp_str,
         pace_s=mp_s,
         segments=[seg],
@@ -913,6 +952,30 @@ def cross_training_day(minutes: int = 60, *, label: str | None = None) -> Workou
         distance_mi=None,
         duration_min=minutes,
     )
+
+
+def apply_cross_training(
+    plan: TrainingPlan, weekdays, *, minutes: int = 45, label: str | None = None
+) -> TrainingPlan:
+    """Seat a standing non-running aerobic session on ``weekdays`` wherever they are currently rest,
+    on every non-race week (race/tune-up weeks are left clean).
+
+    Pfitzinger ch.4 (*Advanced Marathoning* pp.203-204): cross-training supplies cardiovascular
+    fitness "without increasing the repetitive wear and tear associated with running" — it
+    **maintains** fitness through downtime and, when it adds aerobic volume you couldn't otherwise
+    absorb as mileage, **improves** performance (best with leg-based modalities: cycling, elliptical,
+    deep-water running). It supplements running, so it only fills rest days and never displaces a
+    run. Running totals are unchanged (CROSS days carry 0 mi)."""
+    wanted = {d for d in (weekdays or ()) if d in DAY_NAMES}
+    if not wanted:
+        return plan
+    for w in plan.weeks:
+        if any(d.workout.kind == WorkoutKind.RACE for d in w.days):
+            continue
+        for i, day in enumerate(w.days):
+            if day.day in wanted and day.workout.kind == WorkoutKind.REST:
+                w.days[i] = PlannedDay(day.day, cross_training_day(minutes, label=label))
+    return plan
 
 
 def assemble_week(
