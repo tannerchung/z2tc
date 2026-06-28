@@ -37,6 +37,7 @@
 | Optional intake defaults | `engine/plan/intake.py` |
 | Coach readiness model (goal realism, breaks, re-entry, race-time prediction) | `engine/readiness.py` |
 | Athlete dossier (read-only: demonstrated volume, VDOT-over-time + responder profile, goal realism) + `proposed_inputs` → `athlete-report --propose` proposed events | `engine/athlete_profile.py` (CLI `athlete-report`) |
+| Pronoun handling for the third-person coach dossier (presentation only; never reaches `AthleteInputs`) | `engine/pronouns.py` |
 | Execution summary (`summarize_execution` shortfall flags; `execution_from_actuals` scores every week → positive reinforcement) | `engine/execution.py` |
 | Narrative capture/versioning (deterministic-vs-LLM record + per-surface distillation stats; CLI `narrative-log`) | `engine/narrative_capture.py` |
 | Personalization context (number-safe bridge to optional LLM prose smoothing) | `engine/personalization.py` |
@@ -54,12 +55,17 @@
 | Event vocabulary + `parse_event_payload` | `store/events.py` |
 | Historical training-block snapshot + demonstrated-capacity profile (athlete profiling; **not** wired into the engine) | `engine/analyze.py` (`compute_capacity_profile`), `store/models.py` (`TrainingBlock`), `store/db.py` (`save_/list_/latest_training_block`) |
 | NYRR RMS API (chip times) | `lib/data_feeds/nyrr.py` |
+| RTRT.me live-results client (chip times) | `lib/data_feeds/rtrt.py` |
+| Race → results-API catalog (provider/slug lookup for chip feeds) | `lib/data_feeds/race_catalog.py` |
 | Official marathon date lookup | `lib/marathon_calendar.py` |
 | Intake Sheet → `SurveyInputs` reader | `store/intake_sheet.py` |
 | Plan JSON serde | `store/serialization.py` |
 | Typed LLM boundary (stub) | `llm/boundary.py` |
 | Sheets style harvest + `StyleSpec` bridge | `render/style.py` |
 | Sheets plan writer + feedback read | `render/sheets.py` |
+| Coach-facing plan brief (method choice, P, paces, flags preamble) | `render/plan_brief.py` |
+| Stacked "workout card" cell renderer (warm-up / main / cool-down from the cell label) | `render/workout_cell.py` |
+| Workout pace/effort glossary + legend (shared by the dictionary tab and cells) | `render/workout_glossary.py` |
 | Club "Long Runs" tab (union of athlete plans on a shared Saturday calendar; divergent-race tokens) | `render/long_runs.py` |
 | Club "Read Me First" orientation tab generator | `render/read_me.py` |
 | Club "Workout Dictionary" tab (engine-generated from the catalog + glossary) | `render/workout_dictionary.py` |
@@ -76,6 +82,8 @@
 | Event-sourcing contract | `docs/architecture/event-sourcing.md` |
 | Sheets credential helper | `render/runtime.py` |
 | Form / Sheet / table scripts | `scripts/google_oauth_z2tc.py`, `scripts/setup_club_intake_sheet.py`, `scripts/update_marathon_intake_form.py`, `scripts/extract_daniels_tables.py`, `scripts/run_kelly_demo.py`, `scripts/merge_report_nyrr_survey.py`, `scripts/import_all_athletes.py`, `scripts/backfill_db.py`, `scripts/compare_cindy_plans.py`, `scripts/book_search.py` |
+| One-off store migration (pre-season → season-scoped schema) | `scripts/migrate_db_to_seasons.py` |
+| Workout-naming harvest + sheet-format samplers | `scripts/read_runna_calendar.py`, `scripts/retro_reflow_why.py`, `scripts/sample_workout_format.py` |
 | Book citation search (Daniels/Pfitz/Hanson/Higdon PDFs; `cite` subcommand) | `scripts/book_search.py` |
 | Dependency pin | `requirements.txt` |
 | Doc path verifier | `bin/check-doc-refs` |
