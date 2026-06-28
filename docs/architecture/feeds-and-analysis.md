@@ -19,8 +19,15 @@ How Strava data is collected and how **`training.jsonl`** turns into calendars, 
 [`engine/analyze.py`](../../engine/analyze.py):
 
 - **`summarize(weeks)`** — weekly run miles, longest run, races from titles, best efforts at benchmark distances.
-- **`build_marathon_report`** — finds latest **Marathon** race in range, slices `block_weeks` before it, summarizes block + post-marathon window, **`recommended_vdot`** (prefers recent half when available).
+- **`build_marathon_report`** — finds latest **Marathon** race in range, slices `block_weeks` before it, summarizes block + post-marathon window, **`recommended_vdot`** (prefers recent half when available). Also attaches a `capacity_profile` (see below).
+- **`compute_capacity_profile(weeks, marathon_date=…)`** — pure demonstrated-capacity read of a block: per-week run-days, weekly miles, longest run, and the long-run share of the week, with the goal-marathon week flagged and excluded from the "training" longest-run/share stats. Profiles *how a runner actually trained* (e.g. a low-frequency runner whose long run is 80–100% of a low weekly volume).
 - **`load_weeks`**, **`build_calendar`** — helpers for `analyze` command output.
+
+### Durable history (athlete profiling)
+
+`marathon-report` persists each detected block to the store as a **`TrainingBlock`** (raw block weeks + the derived `report` + the `capacity_profile`), keyed per `(athlete, marathon)` so a re-scrape refreshes one row and distinct marathons accumulate. It is athlete-scoped (blocks predate the seasons we plan) and read via `Store.list_/latest_training_block` (by store id **or** Strava id). This is **descriptive history we keep for later analysis of how far a runner can be pushed — it is deliberately not wired into plan generation.** Use `--no-store` on `marathon-report` to write files only.
+
+The **dossier** (`main._load_dossier`, shared by `athlete-report` / `publish-sheet`) sources its race history and weekly feed from this stored block (`report_json` → `all_races_detected`, `weeks_json` → trailing-volume feed) rather than the `output/marathon/` files. Explicit `--report` / `--training` paths override the store; the default files are a last-resort fallback (e.g. a `--no-store` scrape), so a cleaned `output/marathon/` no longer silently drops the responder timeline.
 
 [`engine/vdot.py`](../../engine/vdot.py) — VDOT from race performance (used by report / plan inputs).
 

@@ -256,6 +256,59 @@ def test_propose_notes_no_stub_records_only_coach_note(
     assert sum(1 for r in db.list_events(aid) if r["event_type"] == "CoachNote") == 1
 
 
+def test_dossier_proposals_are_proposed_then_fold_only_after_approval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Step 2: the dossier feeds plan creation as *proposed* events — never a silent mutation. The
+    # proposed ManualOverride is skipped by the fold until `review` approves it.
+    monkeypatch.setenv("Z2TC_DISABLE_GEMINI", "1")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    from engine import athlete_profile as ap
+    from engine.plan.replan import fold_events_to_inputs
+
+    db = Store(db_path=tmp_path / "dos.db", project_root=tmp_path)
+    aid = "dos-1"
+    db.upsert_athlete(Athlete(id=aid, name="Dossier", strava_athlete_id=None))
+    survey = _minimal_survey()
+    db.save_survey_baseline(aid, survey)
+
+    vol = ap.VolumeProfile(
+        demonstrated_opener_mpw=24.0, sustainable_low_mpw=20.0, sustainable_high_mpw=35.0,
+        peak_mpw=40.0, avg_active_mpw=28.0, long_run_dominance_pct=0.0, active_weeks=10,
+    )
+    proposals = ap.proposed_inputs(vol, current_opener_mpw=12.0, injury_prone=True)
+    assert proposals and proposals[0].field == "reentry_start_mpw" and proposals[0].value == 24
+    dossier = ap.AthleteDossier(
+        name="Dossier",
+        volume=vol,
+        fitness=ap.FitnessTimeline(
+            current_vdot=43.0, races=[], vdot_min=None, vdot_max=None,
+            volume_vdot_corr=None, responder="insufficient-data", endurance_gap=None,
+        ),
+        goals=[],
+        anchor=ap.AnchorConfidence(43.0, None, None, False, "n/a"),
+        proposed_inputs=proposals,
+    )
+
+    assert main._write_dossier_proposals(db, aid, dossier) == 0
+    # An applied provenance CoachNote + a proposed ManualOverride were logged.
+    applied_notes = [r for r in db.list_events(aid) if r["event_type"] == "CoachNote" and r["status"] == "applied"]
+    assert len(applied_notes) == 1
+    proposed = db.list_events(aid, status="proposed")
+    assert len(proposed) == 1 and proposed[0]["event_type"] == "ManualOverride"
+
+    # Never silent: the proposed override does not affect the folded inputs until approved.
+    folded, _ = fold_events_to_inputs(survey.to_athlete_inputs(), db, aid)
+    assert folded.reentry_start_mpw != 24
+
+    # After approval the same change folds in.
+    assert main._cmd_review(Namespace(athlete_id=aid, yes_all=True, no_replan=True, db=str(db.path))) == 0
+    assert not db.list_events(aid, status="proposed")
+    folded2, _ = fold_events_to_inputs(survey.to_athlete_inputs(), db, aid)
+    assert folded2.reentry_start_mpw == 24
+
+
 def test_review_empty_queue_returns_0(tmp_path: Path) -> None:
     db = Store(db_path=tmp_path / "rev0.db", project_root=tmp_path)
     aid = "rev0"

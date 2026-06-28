@@ -36,6 +36,48 @@ from store.events import (
 )
 
 
+def test_validate_numbers_subset() -> None:
+    from llm.boundary import validate_numbers_subset
+
+    validate_numbers_subset("open at 6 mpw to a 30 mpw peak off VDOT 37", {"6", "30", "37"})
+    with pytest.raises(ValueError):
+        validate_numbers_subset("peak 45 mpw", {"6", "30", "37"})
+
+
+def test_narrate_personalization_stub_paths(monkeypatch) -> None:
+    from engine.personalization import PersonalizationContext
+    from llm.boundary import narrate_personalization
+
+    ctx = PersonalizationContext.build(
+        {"summary": "Opens near 6 mpw to a 30 mpw peak off VDOT 37.", "notes": "Protect the quality day."},
+        signals={"responder": "speed-dominant"},
+    )
+
+    # No model + no stub -> None (deterministic fallback).
+    monkeypatch.delenv("Z2TC_LLM_STUB_NARRATIVE_JSON", raising=False)
+    monkeypatch.setattr("llm.boundary._gemini_api_key", lambda: None)
+    assert narrate_personalization(ctx) is None
+
+    # Good stub reusing the same numbers -> returned verbatim.
+    monkeypatch.setenv(
+        "Z2TC_LLM_STUB_NARRATIVE_JSON",
+        json.dumps({"summary": "We open around 6 mpw and build to a 30 mpw peak off VDOT 37.", "notes": "Guard that quality day."}),
+    )
+    out = narrate_personalization(ctx)
+    assert out is not None and "6 mpw" in out["summary"] and out["notes"]
+
+    # Fabricated number anywhere -> whole pass rejected (deterministic fallback).
+    monkeypatch.setenv(
+        "Z2TC_LLM_STUB_NARRATIVE_JSON",
+        json.dumps({"summary": "Open at 6 mpw to a 45 mpw peak off VDOT 37.", "notes": "Guard the quality day."}),
+    )
+    assert narrate_personalization(ctx) is None
+
+    # Missing a surface -> rejected.
+    monkeypatch.setenv("Z2TC_LLM_STUB_NARRATIVE_JSON", json.dumps({"summary": "Open at 6 mpw to a 30 mpw peak off VDOT 37."}))
+    assert narrate_personalization(ctx) is None
+
+
 def test_normalize_distance_m() -> None:
     assert _normalize_distance_m({"distance_m": 5000}) == 5000.0
     assert _normalize_distance_m({"distance": "half"}) == RACE_METERS["Half Marathon"]

@@ -382,6 +382,76 @@ def _median_pace(runs: list[RunStat]) -> str | None:
     return f"{m}:{s:02d} /mi"
 
 
+def _is_race_week(runs: list[RunStat], marathon_date: str | None) -> bool:
+    """A week that contains the goal marathon (so its long run is the race, not training)."""
+    return any(
+        r.race_category == "Marathon" or (marathon_date and r.date == marathon_date) or (r.miles or 0) >= 24.0
+        for r in runs
+    )
+
+
+def compute_capacity_profile(weeks: list[dict], *, marathon_date: str | None = None) -> dict:
+    """Demonstrated-capacity profile for a training block (pure; no IO).
+
+    For each ISO week we count distinct *run days*, weekly run miles, the single longest run, and
+    the long run's share of the week. The block summary captures how a runner actually trained —
+    e.g. a low-frequency runner whose long run is 80-100%% of a low weekly volume — so we can later
+    reason about how far they can be pushed. The goal-marathon week is flagged and excluded from the
+    "training" longest-run / share stats (the race isn't a training long run).
+
+    Returns a JSON-friendly dict (summary fields + a compact per-week list). Engine-pure: this
+    profiles history, it does not feed plan generation.
+    """
+    per_week: list[dict] = []
+    run_days: list[int] = []
+    weekly_miles: list[float] = []
+    long_pcts_training: list[float] = []
+    longest_overall = 0.0
+    longest_training = 0.0
+
+    for w in sorted(weeks, key=lambda x: x.get("week_start") or ""):
+        ws = w.get("week_start")
+        runs = [r for r in _run_stats([w]) if r.miles]
+        if not runs:
+            per_week.append(
+                {"week_start": ws, "run_days": 0, "week_mi": 0.0, "long_mi": 0.0, "long_pct": 0.0, "race_week": False}
+            )
+            continue
+        days = len({r.date for r in runs if r.date})
+        wk_mi = round(sum(r.miles for r in runs if r.miles), 1)
+        long_mi = round(max(r.miles for r in runs if r.miles), 1)
+        race_week = _is_race_week(runs, marathon_date)
+        pct = round(100.0 * long_mi / wk_mi) if wk_mi else 0
+        per_week.append(
+            {"week_start": ws, "run_days": days, "week_mi": wk_mi, "long_mi": long_mi, "long_pct": pct, "race_week": race_week}
+        )
+        run_days.append(days)
+        weekly_miles.append(wk_mi)
+        longest_overall = max(longest_overall, long_mi)
+        if not race_week:
+            longest_training = max(longest_training, long_mi)
+            long_pcts_training.append(pct)
+
+    def _avg(xs: list[float]) -> float:
+        return round(sum(xs) / len(xs), 1) if xs else 0.0
+
+    return {
+        "marathon_date": marathon_date,
+        "weeks_total": len(per_week),
+        "weeks_with_runs": len(weekly_miles),
+        "total_run_miles": round(sum(weekly_miles), 1),
+        "avg_run_days_per_week": _avg([float(d) for d in run_days]),
+        "max_run_days_per_week": max(run_days) if run_days else 0,
+        "avg_weekly_miles": _avg(weekly_miles),
+        "peak_weekly_miles": max(weekly_miles) if weekly_miles else 0.0,
+        "longest_run_mi": longest_overall,
+        "longest_run_excl_race_mi": longest_training,
+        "avg_long_run_pct": round(_avg(long_pcts_training)),
+        "max_long_run_pct": round(max(long_pcts_training)) if long_pcts_training else 0,
+        "weeks": per_week,
+    }
+
+
 def build_marathon_report(
     weeks: list[dict],
     *,
@@ -441,6 +511,9 @@ def build_marathon_report(
         "median_pace": _median_pace(block_runs),
         "calendar": build_calendar(block_weeks_data),
     }
+    report["capacity_profile"] = compute_capacity_profile(
+        block_weeks_data, marathon_date=latest["date"]
+    )
     report["post_marathon"] = {
         "from": (m_date + timedelta(days=1)).isoformat(),
         "to": today.isoformat(),
