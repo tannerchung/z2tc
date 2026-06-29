@@ -10,3 +10,6 @@ pymupdf==1.27.2.3   # extract Daniels/Pfitzinger tables from the source PDFs
 pytest==9.0.3       # regression tests for the deterministic engine
 pydantic==2.10.4    # store models + event payloads
 google-generativeai==0.8.4  # optional NL -> structured events (Gemini)
+
+# Plan interop exports (export/). Only needed for `plan-export --format fit`; imported lazily.
+fit-tool==0.9.15    # encode Garmin .FIT structured workouts

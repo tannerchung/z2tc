@@ -968,6 +968,48 @@ def _tab_title_for_athlete(store, plan) -> str | None:
     return full if shared > 1 else first
 
 
+def _cmd_plan_export(args: argparse.Namespace) -> int:
+    """Export the athlete's latest plan to portable artifacts: an ``.ics`` calendar feed and/or
+    Garmin ``.fit`` structured workouts. Read-only; writes files under ``--out-dir/<athlete_id>``."""
+    store = _open_store(args)
+    art = store.load_latest_plan(args.athlete_id)
+    if not art:
+        print("No plan artifact; run build-plan or replan first.", file=sys.stderr)
+        return 1
+    plan = store.plan_from_artifact(art)
+
+    out_dir = Path(args.out_dir) / args.athlete_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    wrote: list[str] = []
+
+    if args.format in ("ics", "all"):
+        from export.ics import plan_to_ics
+
+        ics_path = out_dir / f"{args.athlete_id}.ics"
+        ics_path.write_text(plan_to_ics(plan, running_only=args.running_only), encoding="utf-8")
+        wrote.append(str(ics_path))
+
+    if args.format in ("fit", "all"):
+        try:
+            from export.fit import plan_to_fit
+
+            fit_dir = out_dir / "fit"
+            fit_dir.mkdir(parents=True, exist_ok=True)
+            files = plan_to_fit(plan)
+            for name, data in files:
+                (fit_dir / name).write_bytes(data)
+            wrote.append(f"{len(files)} .fit workout(s) in {fit_dir}")
+        except RuntimeError as exc:
+            print(exc, file=sys.stderr)
+            if args.format == "fit":
+                return 1
+
+    print(f"Exported {plan.method} plan for {plan.athlete}:")
+    for w in wrote:
+        print(f"  - {w}")
+    return 0
+
+
 def _cmd_publish_sheet(args: argparse.Namespace) -> int:
     store = _open_store(args)
     resolved = _load_style_bundle(store, args.style_bundle)
@@ -2393,6 +2435,30 @@ def build_parser() -> argparse.ArgumentParser:
     p_cm.add_argument("--cross-trained", dest="cross_trained", action="store_true")
     p_cm.add_argument("--db", default=None, help=f"SQLite path (default: {default_db_path()}).")
     p_cm.set_defaults(func=_cmd_coach_margin)
+
+    p_exp = sub.add_parser(
+        "plan-export",
+        help="Export the athlete's latest plan to .ics calendar and/or Garmin .fit workouts.",
+    )
+    p_exp.add_argument("athlete_id")
+    p_exp.add_argument(
+        "--out-dir",
+        default=str(PROJECT_ROOT / "output" / "export"),
+        help="Directory root; files land under <out-dir>/<athlete_id>/.",
+    )
+    p_exp.add_argument(
+        "--format",
+        choices=["ics", "fit", "all"],
+        default="all",
+        help="Which artifacts to write (default: all).",
+    )
+    p_exp.add_argument(
+        "--running-only",
+        action="store_true",
+        help="Drop cross-training days from the calendar (.fit already excludes them).",
+    )
+    p_exp.add_argument("--db", default=None, help=f"SQLite path (default: {default_db_path()}).")
+    p_exp.set_defaults(func=_cmd_plan_export)
 
     p_pub = sub.add_parser(
         "publish-sheet",

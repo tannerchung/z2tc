@@ -60,6 +60,7 @@
 | Official marathon date lookup | `lib/marathon_calendar.py` |
 | Intake Sheet → `SurveyInputs` reader | `store/intake_sheet.py` |
 | Plan JSON serde | `store/serialization.py` |
+| Plan interop exports: structured-workout IR + normalizer, iCalendar feed, Garmin `.FIT` workouts (`plan-export`) | `export/structured.py`, `export/ics.py`, `export/fit.py` |
 | Typed LLM boundary (stub) | `llm/boundary.py` |
 | Sheets style harvest + `StyleSpec` bridge | `render/style.py` |
 | Sheets plan writer + feedback read | `render/sheets.py` |
@@ -98,6 +99,7 @@ Not version-controlled; layout depends on commands run:
 - `output/marathon/` — default `--out-dir` for `marathon-report`: `training_<id>.jsonl`, `report_<id>.json`, `marathon_reports.json`.
 - `output/z2tc.db` — default SQLite store for athletes, survey baselines, `plan_artifacts` (with `engine_version`), append-only `events`, `training_blocks` (durable per-athlete history snapshots: raw scraped weeks + report + a demonstrated-capacity `profile`, keyed per marathon; also backs the dossier's race/feed history), append-only `narrative_renders` (deterministic-vs-LLM narrative capture for the distillation loop, linked to `plan_artifact_id`), append-only `publications` (plan-artifact → published sheet lineage), `weekly_actuals` (per-week run miles, upsert per `(season, week_start)`, so execution scoring replays from the store; written by `monitor` / `publish-sheet --training`), and a `config` kv (e.g. the cached club style bundle under `STYLE_BUNDLE_KEY`). `store/db.py`, `SCHEMA_VERSION` ↔ `PRAGMA user_version`; column adds handled by `_migrate()`.
 - `output/club_workbook_style.json` — optional file copy of the `ingest-style` bundle (`style_spec` + `spreadsheet_id`). The store's `config` kv is the source of truth; `publish-sheet` / `publish-club` use an explicit `--style-bundle` file when present, else fall back to the store.
+- `output/export/<athlete_id>/` — default `plan-export` output: `<athlete_id>.ics` (subscribable calendar feed) + `fit/*.fit` (Garmin structured workouts, one per running session).
 - Custom directories (e.g. per-athlete runs) follow the same per-file naming inside the chosen `--out-dir`. after `login`, Strava cookies live under `auth/` as Playwright storage state (see `feeds/strava/session.py`).
 
 ## Conventions

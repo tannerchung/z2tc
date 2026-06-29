@@ -180,6 +180,20 @@ python main.py replan 128394498
 
 `--exclude` on `mark-race` drops a bad data point; `fitness-select --report PATH` overrides the default `output/marathon/report_<strava-id>.json`.
 
+## `plan-export <athlete_id>`
+
+Export the latest `PlanArtifact` to portable, platform-neutral artifacts under `output/export/<athlete_id>/`. Read-only on the store. Both exporters consume the same structured-workout IR (`export/structured.py`), which normalizes the engine's `Workout.segments` into steps with **pace bands** (fast/slow s/mi), preserves rep work as **repeat-loop blocks** (e.g. 5 × [1000 m @ I, 2:00 jog]), and pads quality blocks (e.g. the 4 mi @ T inside an 8 mi run) with warm-up/cool-down easy so each session's steps sum back to its total.
+
+- `--format ics` → `<athlete_id>.ics`: an iCalendar feed (one all-day VEVENT per session; stable UIDs so re-export updates in place; rep blocks shown compactly as `N × (...)`). Subscribable in Google / Apple / Garmin Connect calendars.
+- `--format fit` → `fit/*.fit`: one Garmin `.FIT` structured workout per running session, with per-step pace-target speed alerts and native repeat steps (the watch counts "rep 2 of 5"). Needs the optional `fit-tool` package (`pip install fit-tool`); cross-training days are skipped (no pace).
+- `--format all` (default) writes both. `--running-only` drops cross-training from the calendar. `--out-dir` overrides the root.
+
+```bash
+python main.py plan-export kelly-hession                      # .ics + .fit under output/export/kelly-hession/
+python main.py plan-export kelly-hession --format ics
+python main.py plan-export kelly-hession --format fit --out-dir /tmp/garmin
+```
+
 ## `publish-sheet <athlete_id>`
 
 Render latest `PlanArtifact` to a tab using the style bundle from `ingest-style` (an explicit `--style-bundle` file wins, else the store's cached bundle; default file path `output/club_workbook_style.json`). Once `record-tune-up` results exist, each tune-up week shows an on-track/behind indicator: the race cell is tinted green (on track) / amber (B-goal) / red (behind) and the "Why" leads with the verdict (pairs landed results to tune-up weeks in order; same projection as `record-tune-up`).
