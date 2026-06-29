@@ -149,6 +149,65 @@ approval — never inventing the *content*, only the wording.
 
 ---
 
+## 6a. Plan-sheet narrative personalization (built)
+
+The plan sheet's four narrative surfaces — the summary, "How this plan is personalized to you",
+the notes/cautions block, and the per-week "Why" — now consume the same structured signals:
+
+- The **athlete dossier** (`engine/athlete_profile.py`) feeds the three paragraph surfaces: the
+  responder profile (volume-sensitive / speed-dominant / stable), the volume↔VDOT correlation, and
+  the short-vs-marathon endurance gap shape the framing (e.g. speed-dominant → bias the block toward
+  durability over peak mileage).
+- The **execution summary** (`engine/execution.py`) folds the accumulating monitor signals into
+  per-week feedback. Two builders: `summarize_execution(payloads)` sees only the monitor's shortfall
+  flags (`AdherenceFlag` / `MissedQuality` / `WeeklyEvaluation`), while
+  `execution_from_actuals(plan, weekly_actuals)` scores **every elapsed week** against its
+  prescription. The latter's `weekly_actuals` are persisted to the store's `weekly_actuals` table by
+  `monitor` and `publish-sheet --training` (upsert per `(season, week_start)`), so scoring **replays
+  from the store** when no feed is supplied — the feed file is an input, not the source of truth. It
+  lets the narrative give **earned positive reinforcement** — on-plan weeks get a "nice work" note in
+  their "Why" and the notes block leads with the consistency tally — and frames any shortfalls as the
+  reason for conservative choices, rather than only listing misses. Positive reinforcement is only
+  emitted when we scored the week from actuals (never inferred from the mere absence of a flag).
+  Weeks with no data render exactly as before.
+
+This stays true to §6's contract: the **content is deterministic** (number-safe templates, test-locked).
+The optional `publish-sheet --llm-narrative` pass only smooths the wording of the three paragraph
+surfaces through `llm.boundary.narrate_personalization`, and a number-subset guard
+(`validate_numbers_subset`) rejects any output that introduces a figure not already in the facts — so
+the LLM can never fabricate a pace, mileage, or finish time. No API key → deterministic text. (The
+per-week "Why" and execution feedback are **already fully deterministic** — the LLM only touches the
+three paragraph surfaces.)
+
+### 6b. Narrative versioning + the distillation loop (built)
+
+The goal is to **shrink the LLM's job over time**: whatever it reliably does, graduate into a
+deterministic template. To know what's safe to graduate, every render is captured.
+
+- **Versioning.** `render.plan_layout.NARRATIVE_TEMPLATE_VERSION` (bump on any deterministic-template
+  change), `llm.boundary.NARRATE_PROMPT_VERSION` + the active model (`active_narrate_model()`), and
+  the store's `SCHEMA_VERSION` (mirrored to SQLite `PRAGMA user_version`) tag each record so a later
+  shift in output can be attributed to a template revision, a prompt change, or a model swap. Plan
+  artifacts already carry the resolved-inputs fingerprint; the narrative records carry it too.
+- **Capture.** `engine/narrative_capture.py` (pure) packages, per surface, the **deterministic draft
+  and the final text** plus those versions and the non-numeric signals (responder, execution tally)
+  into a `NarrativeRender`. `publish-sheet` appends one per smoothable surface to the append-only
+  `narrative_renders` table (best-effort — capture never breaks a render). Each render carries the
+  `plan_artifact_id` it described, so a captured narrative joins back to the exact plan.
+- **Lineage.** Every `publish-sheet` also writes a `publications` row tying the published
+  `plan_artifact_id` to where it went (spreadsheet + sheet title/url) and the engine/template/prompt/
+  model versions in force (`narrative_source` ∈ deterministic/llm/mixed). Read via
+  `Store.list_publications(athlete, plan_artifact_id=…)`. This closes the loop "which plan, built by
+  which engine, with which narrative, did this sheet show?" — the join key for outcome analysis.
+- **Monitor / pattern.** `python main.py narrative-log [athlete]` folds the log into per-surface
+  stats: how often the LLM actually changed the deterministic text (`llm_change_rate`), the mean edit
+  size, and the guard pass rate. A surface the LLM rarely changes (≥5 renders, <20% changed) is
+  flagged a **`det-candidate`** — drop the LLM there and keep the template. High-variance surfaces are
+  genuinely complex and stay on the LLM. This is the offline loop: capture → analyze → graduate
+  patterns into `engine`/`render` deterministic templates → re-measure.
+
+---
+
 ## 7. Staging
 
 1. **A — Directives** (`EffortQuality`, `FitnessAnchor`, `DataExclude`) — **done.** Finishes the

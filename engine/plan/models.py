@@ -24,6 +24,21 @@ class MarathonRace:
     date: str                      # ISO YYYY-MM-DD
 
 
+@dataclass(frozen=True)
+class TuneUpRace:
+    """A shorter race scheduled inside the build as a fitness checkpoint (e.g. 5K/10K). The club
+    post-process (`place_tune_up_races`) seats it on the long-run day of ``week`` (a mini-cutback
+    week so it's run fresh); ``target_time_s`` is the advisory on-track time for the marathon goal
+    (display only — it never changes the prescribed paces). Built by the club engine from the
+    readiness tune-up ladder, or set explicitly by a coach. See engine/plan/club.py and
+    engine/readiness.tune_up_ladder."""
+
+    week: int                      # 1-based plan week the race lands in (long-run slot)
+    distance_m: float              # 5000 / 10000 / 21097.5 ...
+    label: str                     # short distance label, e.g. "10K"
+    target_time_s: int | None = None  # on-track-for-goal time at this distance (advisory)
+
+
 class WorkoutKind(str, Enum):
     REST = "rest"
     EASY = "easy"
@@ -66,11 +81,20 @@ class AthleteInputs:
     days_per_week: int
     race_date: str                 # **primary** A-race date, ISO "YYYY-MM-DD" (drives the block)
     injury_prone: bool = False
+    returning_marathoner: bool = False
+    last_marathon_date: str | None = None       # ISO; anchor block from Strava latest marathon
+    last_marathon_time_s: int | None = None     # chip or Strava time at that marathon
+    decayed_peak_mpw: float | None = None       # p_history after volume-capacity decay (advisory)
     # Fitness-clock / break context (Strava-derived at merge time). Feed the freshness +
     # Table 15.1 model in ``engine/readiness`` — they do NOT change the deterministic plan.
     recent_break_days: int | None = None        # longest gap of *not running* in the lead-up
     cross_trained_during_break: bool = False     # leg-aerobic cross-training during that gap (FVDOT-2)
     cross_training_note: str | None = None       # human summary, e.g. "Pilates/Swim/Ride (475 acts)"
+    # Standing weekly cross-training (Pfitzinger ch.4, pp.203-204): non-running aerobic work seated
+    # on these weekdays where they're otherwise rest. Adds cardiovascular fitness without the impact
+    # of more mileage; running miles are unchanged (CROSS days carry 0 mi).
+    cross_training_days: tuple[str, ...] = ()    # e.g. ("Fri",)
+    cross_training_minutes: int = 45
     # Ramp start + observed pace. A race-fit returner re-enters *above* an off-season ``w_now``
     # (readiness Table 15.2), so the ramp doesn't start at an absurdly low week 1 — see
     # ``engine/readiness.recommended_reentry_volume`` and docs/architecture/athlete-readiness.md §4.
@@ -84,6 +108,16 @@ class AthleteInputs:
     # Peak / comeback overrides (Daniels ramp + scenario generator).
     coach_floor_mpw: float | None = None         # raises fast-regain ceiling toward demonstrated capacity
     coach_target_mpw: float | None = None        # explicit peak target for volume ramp (overrides inferred peak)
+    # Per-athlete coach overrides (set via ManualOverride events; default keeps book behavior).
+    aggressive_volume_ramp: bool | None = None   # tri-state: None = unset (club resolves), True/False = explicit coach choice. When True, +1 mi/running-day EVERY week to peak (vs Daniels' 3-wk hold). The z2tc club engine resolves this from ClubPolicy.allow_aggressive_ramp — see engine/plan/club.py
+    long_run_cap_mi: float | None = None         # let the long run build to this distance, over the 3 h / share caps (monitored)
+    long_run_peak_weeks: int | None = None       # weeks held at long_run_cap_mi (default 3); ramps up to it before then
+    quality_long_runs_race_prep_only: bool = False  # keep threshold long runs easy; quality longs only in race-prep (4-day load)
+    strides_per_phase: int | None = None         # cap on stride weeks per phase (default common.STRIDES_PER_PHASE)
+    weekday_quality_sessions: int | None = None  # midweek quality sessions in a build week (None/1 = pure Daniels 2Q single midweek quality; 2 adds a midweek race-pace run, except down weeks / weeks the long run is itself quality). The z2tc club engine defaults this to 2 — see engine/plan/club.py
+    base_quality_ramp: bool | None = None  # tri-state: None = unset (club resolves), True/False = explicit coach choice. When True, ease a second quality into the Base phase (1 -> 2). Pure Daniels keeps Base aerobic; the club engine enables this for two-quality athletes
+    long_run_share_cap: float | None = None  # max long-run fraction of the week (None = textbook 0.30/0.25; club raises to ~0.50 so low-mileage/3-day athletes still reach a real long run). Bounded by the time-on-feet / 18-mi caps regardless. See engine/plan/club.py
+    tune_up_races: tuple[TuneUpRace, ...] | None = None  # tri-state: None = unset (club builds the readiness ladder), () = explicitly none, non-empty = coach-set checkpoints. Pure generator places each on its week's long-run slot. See engine/plan/club.py
     # Optional program keys for single-author engines (None -> engine default / recommender).
     higdon_program: str | None = None            # novice1 | novice2 | intermediate1 | intermediate2
     hanson_program: str | None = None            # just_finish | beginner | advanced
@@ -131,13 +165,21 @@ class AthleteInputs:
 
 
 def training_plan_goal_payload(inputs: AthleteInputs) -> dict:
-    """Shape stored on ``TrainingPlan.goal`` (flat primary keys for simple readers)."""
+    """Shape stored on ``TrainingPlan.goal`` (flat primary keys for simple readers).
+
+    ``date`` is the goal (primary) race; ``final_race_date`` is the last race on the calendar
+    (the later of primary and any secondary), which is what the renderer/execution use to anchor
+    week dates. For a single race the two are equal."""
+    secondary = [{"name": r.name, "date": r.date} for r in inputs.secondary_races]
+    all_dates = [inputs.race_date] + [r.date for r in inputs.secondary_races if r.date]
+    final = max((d for d in all_dates if d), default=inputs.race_date)
     return {
         "name": inputs.race_name,
         "date": inputs.race_date,
         "distance": "Marathon",
         "goal_time_s": inputs.goal_marathon_s,
-        "secondary_marathons": [{"name": r.name, "date": r.date} for r in inputs.secondary_races],
+        "secondary_marathons": secondary,
+        "final_race_date": final,
     }
 
 

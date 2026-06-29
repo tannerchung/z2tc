@@ -128,6 +128,83 @@ def test_select_excluded_race_removed():
     assert sel.chosen_date != "2025-05-17"
 
 
+def _week(week_start: str, miles: float) -> dict:
+  workouts = []
+  if miles > 0:
+      workouts = [{"sport_type": "Run", "stats": {"Distance": f"{miles} mi"}}]
+  return {"week_start": week_start, "workouts": workouts}
+
+
+def _cindy_offseason_weeks() -> list[dict]:
+    """Running after Apr 2026 half; 4 zero weeks Dec 2025 (28d break since marathon)."""
+    weeks: list[dict] = []
+    # Oct 2025 – Mar 2026: light running except Dec off block
+    for ws, mi in [
+        ("2025-10-13", 15.0),
+        ("2025-10-20", 12.0),
+        ("2025-11-03", 10.0),
+        ("2025-11-10", 8.0),
+        ("2025-11-17", 6.0),
+        ("2025-11-24", 4.0),
+        ("2025-12-01", 0.0),
+        ("2025-12-08", 0.0),
+        ("2025-12-15", 0.0),
+        ("2025-12-22", 0.0),
+        ("2025-12-29", 5.0),
+        ("2026-01-05", 8.0),
+        ("2026-02-02", 12.0),
+        ("2026-03-02", 14.0),
+        ("2026-04-07", 16.0),
+        ("2026-04-14", 18.0),
+        ("2026-04-21", 20.0),
+        ("2026-04-28", 15.0),
+        ("2026-05-05", 16.0),
+        ("2026-06-02", 16.0),
+    ]:
+        weeks.append(_week(ws, mi))
+    return weeks
+
+
+def test_resolve_merge_vdot_prefers_fitness_break_window():
+    from datetime import date
+
+    post_marathon_races = [
+        {"category": "Half Marathon", "date": "2026-04-26", "duration_s": HMS(2, 8, 0)},
+        {"category": "10K", "date": "2026-06-06", "duration_s": HMS(0, 58, 38)},
+    ]
+    res = rd.resolve_merge_vdot(
+        post_marathon_races,
+        _cindy_offseason_weeks(),
+        marathon_date=date(2025, 10, 11),
+        today=date(2026, 6, 15),
+    )
+    assert res is not None
+    assert res.fitness.chosen_date == "2026-04-26"
+    assert res.break_window == "fitness_race"
+    assert res.break_days < 7
+    assert res.freshness.trust_race_vdot
+    assert res.vdot == pytest.approx(res.raw_vdot, abs=0.05)
+    assert res.vdot > 33.0
+
+
+def test_resolve_merge_vdot_detrains_when_marathon_window_only():
+    from datetime import date
+
+    # Only marathon anchor available — 28d break should discount.
+    races = [
+        {"category": "Marathon", "date": "2025-10-11", "duration_s": HMS(4, 0, 25)},
+    ]
+    res = rd.resolve_merge_vdot(
+        races,
+        _cindy_offseason_weeks(),
+        marathon_date=date(2025, 10, 11),
+        today=date(2026, 6, 15),
+    )
+    assert res is not None
+    assert res.break_days == 28
+    assert res.vdot < res.raw_vdot
+
+
 # --- Top-level assessment (Kelly-like) -------------------------------------------
 def test_assess_readiness_kelly():
     kelly = AthleteInputs(
@@ -154,3 +231,39 @@ def test_decayed_volume_capacity_floor_at_sixteen_weeks():
 
 def test_decayed_volume_capacity_at_two_weeks():
     assert rd.decayed_volume_capacity(40.0, 2) == 36.0  # 40 * 0.90
+
+
+# --- Tune-up ladder --------------------------------------------------------------
+def test_tune_up_ladder_targets_sit_between_current_and_goal():
+    # Gaurav-like: current 37, 3:45 goal needs VDOT ~41 (a stretch).
+    lad = rd.tune_up_ladder(37.0, HMS(3, 45, 0), build_weeks=15, taper_weeks=3)
+    assert lad.required_vdot == 41.0
+    assert lad.verdict == "stretch"
+    # Short/sharp ladder: 5K → 10K → 10K (no half marathon close to the goal; cf. Pfitzinger/Higdon).
+    assert [c.label for c in lad.checkpoints] == ["5K", "10K", "10K"]
+    for c in lad.checkpoints:
+        # On-track-for-goal VDOT rises between current and required, so its target time is
+        # faster (smaller) than the realistic/projected time at the same distance.
+        assert 37.0 <= c.on_track_vdot <= 41.0
+        assert c.on_track_time_s <= c.projected_time_s
+    # Checkpoints are ordered earlier→later in the build.
+    assert [c.week for c in lad.checkpoints] == sorted(c.week for c in lad.checkpoints)
+
+
+def test_tune_up_ladder_dates_when_race_date_known():
+    lad = rd.tune_up_ladder(37.0, HMS(3, 45, 0), build_weeks=15, taper_weeks=3, race_date="2026-11-01")
+    for c in lad.checkpoints:
+        assert c.date is not None and c.date < "2026-11-01"
+    # The 5K is earliest, the race-prep 10K is closest to race day.
+    assert lad.checkpoints[0].date < lad.checkpoints[-1].date
+
+
+def test_tune_up_outcome_maps_verdict_to_status():
+    goal = HMS(3, 5, 0)  # demands a high VDOT
+    # Fitness already at/above the goal need reads on-track; far below reads behind.
+    assert rd.tune_up_outcome(57.0, goal, weeks_remaining=10).status == "on_track"
+    behind = rd.tune_up_outcome(34.0, goal, weeks_remaining=10)
+    assert behind.status == "behind"
+    assert behind.verdict == "unrealistic"
+    assert behind.realistic_time_s and behind.realistic_time_s > goal  # a slower, defensible re-anchor
+    assert behind.measured_vdot == 34.0

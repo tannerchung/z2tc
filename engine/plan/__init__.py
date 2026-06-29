@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 from ..paces import training_paces
 from . import common
+from .club import apply_club_policy, place_tune_up_races
 from .daniels import build_daniels_plan
 from .hanson import build_hanson_plan
 from .higdon import build_higdon_plan
@@ -22,13 +23,44 @@ from .intake import resolve_intake_defaults
 from .models import AthleteInputs, MarathonRace, PlanScenarioMeta, TrainingPlan
 from .pfitzinger import build_pfitzinger_plan
 
-__all__ = ["build_plan", "AthleteInputs", "MarathonRace", "TrainingPlan", "resolve_intake_defaults"]
+# Bump when `build_plan` output can change for the *same* `AthleteInputs` — new/altered generators,
+# mileage spines, pace tables, club policy, or any `common.py` formula. Stamped onto every saved
+# `plan_artifacts.engine_version` so a plan stays attributable to the engine that produced it and so
+# outcome/adherence analysis can be grouped by engine version. Regression fixtures (`tests/test_plan.py`)
+# pin behavior, so a deliberate change should bump this alongside the updated fixtures.
+ENGINE_VERSION = "1"
+
+__all__ = [
+    "build_plan",
+    "build_club_plan",
+    "apply_club_policy",
+    "place_tune_up_races",
+    "AthleteInputs",
+    "MarathonRace",
+    "TrainingPlan",
+    "resolve_intake_defaults",
+    "ENGINE_VERSION",
+]
 
 
 def _finalize(plan: TrainingPlan, inputs: AthleteInputs, paces: dict) -> TrainingPlan:
     if inputs.append_post_marathon_recovery:
         easy_s, easy_str = common.easy_pace(paces)
         plan = common.append_post_marathon_recovery(plan, easy_pace_s=easy_s, easy_str=easy_str)
+    flags = list(plan.flags)
+    if inputs.returning_marathoner:
+        anchor = inputs.last_marathon_date or "?"
+        flags.append(f"returning_marathoner: last block anchored to marathon {anchor}")
+        if inputs.decayed_peak_mpw is not None and inputs.p_history:
+            flags.append(
+                f"decayed_peak_mpw: {inputs.decayed_peak_mpw:g} "
+                f"(demonstrated {inputs.p_history:g} mpw)"
+            )
+        if inputs.last_marathon_time_s:
+            m, s = divmod(int(inputs.last_marathon_time_s), 60)
+            h, m = divmod(m, 60)
+            flags.append(f"last_marathon_finish: {h}:{m:02d}:{s:02d}")
+    plan = replace(plan, flags=tuple(flags))
     plan.generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     return plan
 
@@ -107,6 +139,13 @@ def build_plan(inputs: AthleteInputs) -> TrainingPlan:
         paces["easy_high_s"] = hi
         paces["easy"] = f"{m1}:{s1:02d}-{m2}:{s2:02d}"
 
+    # The marathon pace the plan actually prescribes is *goal* pace (Daniels: MP is goal-driven,
+    # not VDOT-driven). Expose it as its own key so the pace card matches the MP cued in workouts;
+    # the VDOT "marathon"/"marathon_s" entries stay as-is for goal-realism comparisons.
+    paces["marathon_goal_s"] = common.marathon_pace_s(inputs.goal_marathon_s)
+    _gm, _gs = divmod(paces["marathon_goal_s"], 60)
+    paces["marathon_goal"] = f"{_gm}:{_gs:02d}"
+
     if inputs.emit_peak_scenarios and method == common.DANIELS:
         return _daniels_peak_scenarios(inputs, paces)
 
@@ -117,3 +156,20 @@ def build_plan(inputs: AthleteInputs) -> TrainingPlan:
     }.get(method, build_daniels_plan)
     plan = builder(inputs, paces)
     return _finalize(plan, inputs, paces)
+
+
+def build_club_plan(inputs: AthleteInputs) -> TrainingPlan:
+    """The Zone 2 Track Club entrypoint: layer the club's house policy (see ``club.py``) onto the
+    inputs, build through the pure :func:`build_plan`, then seat the club's tune-up races into the
+    plan (a method-agnostic post-process, so every club plan gets the feedback-loop races, not just
+    Daniels). Production code builds club plans."""
+    from .club import build_marathon_double
+
+    resolved = apply_club_policy(inputs)
+    double = build_marathon_double(resolved)
+    plan = double if double is not None else place_tune_up_races(build_plan(resolved), resolved)
+    if resolved.cross_training_days:
+        plan = common.apply_cross_training(
+            plan, resolved.cross_training_days, minutes=resolved.cross_training_minutes
+        )
+    return plan

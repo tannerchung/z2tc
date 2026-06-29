@@ -19,6 +19,7 @@ a topic has an owner below, link it — don't re-explain it.
 | [`architecture/athlete-readiness.md`](architecture/athlete-readiness.md) | The **decision/reasoning layer**: two clocks (fitness vs volume), freshness + Table 15.1 breaks, re-entry start, recommended P/tier, **goal realism** (§10), **volume-vs-VO2max balance** (§11), the `engine/readiness.py` map (§12), Kelly worked example. | Coaching judgement, break math, goal-feasibility logic. |
 | [`architecture/formula-reference.md`](architecture/formula-reference.md) | **Book provenance** for every constant in `engine/plan/common.py` (verbatim / house rule / divergence), the two book tables of contents, and the citation tool. | Page-cited constants; the L-vs-M long-run distinction. |
 | [`architecture/plan-engine.md`](architecture/plan-engine.md) | **Structural map** of the generators (Daniels 2Q + Pfitzinger), phases, week assembly. | Generator structure / phase boundaries. |
+| [`architecture/workout-catalog.md`](architecture/workout-catalog.md) | The **workout dictionary**: every catalog session (`engine/plan/workouts.py`) with its definition, how the engine sizes/paces it, and the Q1/Q2 rotation per phase. | What each workout is; how it's generated; rotation. |
 | [`architecture/event-sourcing.md`](architecture/event-sourcing.md) | The **event log + replan fold** contract. | Event vocabulary, replan semantics. |
 | [`architecture/interpretation-layer.md`](architecture/interpretation-layer.md) | The **interpretation & coaching layer** (design): data-selection directives, race-condition adjustments, the NL→structured boundary, live-monitor signals, coach briefs. | How coach/LLM input is applied deterministically; staging. |
 | [`architecture/feeds-and-analysis.md`](architecture/feeds-and-analysis.md) | **Scraping, `analyze`, `marathon-report`** behavior. | Strava feed + analysis pipeline. |
@@ -43,6 +44,7 @@ a topic has an owner below, link it — don't re-explain it.
 |-----|------------------|
 | [`cheatsheets/01 - CLI Quick Reference.md`](cheatsheets/01%20-%20CLI%20Quick%20Reference.md) | **CLI flag tables** for `main.py` + `bin/` + scripts. |
 | [`cheatsheets/08 - Schemas & Config Reference.md`](cheatsheets/08%20-%20Schemas%20&%20Config%20Reference.md) | **Schema/config** field reference. |
+| [`design/plan-sheet-layout.md`](design/plan-sheet-layout.md) | **Plan tab layout & club workbook styling** for `publish-sheet`. |
 
 ## Citing the books
 

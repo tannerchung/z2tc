@@ -13,7 +13,10 @@ import os
 import re
 import sys
 from datetime import date, datetime, timedelta, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from engine.personalization import PersonalizationContext
 
 from pydantic import BaseModel, Field
 
@@ -389,13 +392,8 @@ def _gemini_parse_payloads(raw_text: str, *, break_days: int, cross_trained: boo
     return out
 
 
-def _gemini_generate_json(
-    user_text: str,
-    *,
-    today: date | None = None,
-    race_date: str | None = None,
-    block_weeks: int | None = None,
-) -> str | None:
+def _gemini_complete_json(prompt: str) -> str | None:
+    """Run one Gemini JSON completion for ``prompt`` (full prompt, no extra system framing)."""
     key = _gemini_api_key()
     if not key:
         return None
@@ -405,9 +403,6 @@ def _gemini_generate_json(
         return None
     genai.configure(api_key=key)
     model = genai.GenerativeModel(_gemini_model_name())
-    td = today if today is not None else datetime.now(timezone.utc).date()
-    ground = _build_grounding(td, race_date, block_weeks)
-    prompt = _EXTRACT_SYSTEM + "\n\n" + ground + "Coach/athlete text:\n" + user_text
     resp = model.generate_content(
         prompt,
         generation_config={"response_mime_type": "application/json"},
@@ -415,6 +410,19 @@ def _gemini_generate_json(
     )
     text = (getattr(resp, "text", None) or "").strip()
     return text or None
+
+
+def _gemini_generate_json(
+    user_text: str,
+    *,
+    today: date | None = None,
+    race_date: str | None = None,
+    block_weeks: int | None = None,
+) -> str | None:
+    td = today if today is not None else datetime.now(timezone.utc).date()
+    ground = _build_grounding(td, race_date, block_weeks)
+    prompt = _EXTRACT_SYSTEM + "\n\n" + ground + "Coach/athlete text:\n" + user_text
+    return _gemini_complete_json(prompt)
 
 
 def stub_extract_events(
@@ -488,6 +496,85 @@ def extract_events(
     return _apply_date_flags(athlete_id, recs, window)
 
 
+# Bump when the personalization prompt below changes in a way that could shift output. Captured on
+# every smoothed render (`narrative_renders.prompt_version`) so later analysis can attribute a change
+# in LLM behavior to a prompt revision vs a model swap.
+NARRATE_PROMPT_VERSION = "p1"
+
+
+def active_narrate_model() -> str | None:
+    """Which model would `narrate_personalization` use right now: ``"stub"`` (test fixture),
+    the Gemini model name (live key), or ``None`` (no model → deterministic only). Lets the capture
+    layer record provenance without re-deriving the selection logic."""
+    if os.environ.get("Z2TC_LLM_STUB_NARRATIVE_JSON", "").strip():
+        return "stub"
+    return _gemini_model_name() if _gemini_api_key() else None
+
+
+_PERSONALIZE_SYSTEM = """You are an experienced, warm marathon coach writing to one athlete.
+You will receive a JSON object mapping narrative surface names to draft coaching prose, plus
+non-numeric grounding signals. Rephrase each surface so it reads as natural, encouraging,
+first-person coaching ("I"/"you") with good flow.
+
+HARD RULES:
+- Preserve every number EXACTLY as written (paces, mileage, VDOT, times, percentages). Do not add,
+  remove, round, or invent any number. If a fact is not in the draft, do not introduce it.
+- Keep the same meaning and the same set of facts; you are only improving tone and cohesion.
+- Return a JSON object ONLY (no markdown) with the SAME keys you were given, each mapping to the
+  rephrased string. Omit nothing."""
+
+
+def validate_numbers_subset(text: str, allowed: set[str]) -> None:
+    """Reject prose that introduces a numeric token not present in ``allowed`` (the numbers the
+    deterministic facts legitimately contain). This is what lets the LLM rephrase surfaces that
+    legitimately carry paces/mileage without being able to fabricate new figures."""
+    from engine.personalization import numbers_in
+
+    extra = numbers_in(text) - set(allowed)
+    if extra:
+        raise ValueError(f"LLM narrative introduced numbers not in the facts: {sorted(extra)}")
+
+
+def _stub_narrative() -> dict[str, str] | None:
+    raw = os.environ.get("Z2TC_LLM_STUB_NARRATIVE_JSON", "").strip()
+    if not raw:
+        return None
+    data = json.loads(raw)
+    return data if isinstance(data, dict) else None
+
+
+def narrate_personalization(ctx: "PersonalizationContext") -> dict[str, str] | None:
+    """Rephrase the plan-sheet paragraph surfaces for tone (number-safe). Returns a surface→prose
+    dict, or ``None`` when there is no model available or the number-subset guard rejects any output
+    — callers then keep the deterministic prose. Numbers can never be fabricated (see
+    :func:`validate_numbers_subset`). ``Z2TC_LLM_STUB_NARRATIVE_JSON`` supplies output in tests."""
+    if not getattr(ctx, "surfaces", None):
+        return None
+    try:
+        smoothed = _stub_narrative()
+        if smoothed is None:
+            if not _gemini_api_key():
+                return None
+            payload = {"surfaces": ctx.surfaces, "signals": ctx.signals}
+            prompt = _PERSONALIZE_SYSTEM + "\n\n" + json.dumps(payload, ensure_ascii=False)
+            raw = _gemini_complete_json(prompt)
+            if not raw:
+                return None
+            smoothed = json.loads(_strip_json_fence(raw))
+        if not isinstance(smoothed, dict):
+            return None
+        out: dict[str, str] = {}
+        for name, original in ctx.surfaces.items():
+            text = smoothed.get(name)
+            if not isinstance(text, str) or not text.strip():
+                return None  # incomplete rephrase → fall back wholesale (deterministic)
+            validate_numbers_subset(text, ctx.allowed_numbers)
+            out[name] = text.strip()
+        return out
+    except (ValueError, json.JSONDecodeError, KeyError, TypeError):
+        return None
+
+
 def narrate(diff: PlanDiffSummary) -> str:
     """Structured diff -> coach-facing blurb (no numbers invented)."""
     parts = []
@@ -506,18 +593,21 @@ def extract_style(format_dump: dict[str, Any], *, use_llm_assist: bool = False) 
     """Heuristic style from harvested grid data; ``use_llm_assist`` reserved for later."""
     _ = use_llm_assist
     spec = StyleSpec(notes="derived_heuristic")
-    # If dump contains sampled title styles, pick first font/size (MVP).
+    header_rgb: tuple[float, float, float] | None = None
     tabs = format_dump.get("tabs") or []
     for tab in tabs:
         for cell in tab.get("sample_cells") or []:
             fmt = cell.get("userEnteredFormat") or {}
             t = fmt.get("textFormat") or {}
+            bg = fmt.get("backgroundColor") or {}
             if t.get("fontSize") and spec.title_font_size is None:
                 spec.title_font_size = int(t["fontSize"])
             if t.get("fontFamily") and spec.title_font_family is None:
                 spec.title_font_family = str(t["fontFamily"])
-            if spec.title_font_size and spec.title_font_family:
-                return spec
+            if bg and t.get("bold") and header_rgb is None:
+                header_rgb = (float(bg["red"]), float(bg["green"]), float(bg["blue"]))
+    if header_rgb:
+        spec.header_rgb = header_rgb
     return spec
 
 

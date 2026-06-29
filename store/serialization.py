@@ -7,11 +7,14 @@ from enum import Enum
 from typing import Any
 
 from engine.plan.models import (
+    AthleteInputs,
+    MarathonRace,
     PlannedDay,
     PlannedWeek,
     PlanScenarioMeta,
     Segment,
     TrainingPlan,
+    TuneUpRace,
     Workout,
     WorkoutKind,
 )
@@ -114,6 +117,39 @@ def training_plan_from_dict(d: dict[str, Any]) -> TrainingPlan:
         scenario=scenario,
         sibling_scenarios=sibling_scenarios,
     )
+
+
+def athlete_inputs_to_dict(inputs: AthleteInputs) -> dict[str, Any]:
+    """JSON-safe snapshot of the resolved ``AthleteInputs`` that built a plan.
+
+    Tuple fields (``secondary_races``, ``marathons_selected``) become lists so the dict
+    round-trips through JSON; ``athlete_inputs_from_dict`` restores the dataclass.
+    """
+    d = asdict(inputs)
+    d["secondary_races"] = [{"name": r["name"], "date": r["date"]} for r in d.get("secondary_races", [])]
+    d["marathons_selected"] = list(d.get("marathons_selected", []))
+    return d
+
+
+def athlete_inputs_from_dict(d: dict[str, Any]) -> AthleteInputs:
+    """Inverse of :func:`athlete_inputs_to_dict`; ignores unknown keys for forward-compat."""
+    data = dict(d)
+    data["secondary_races"] = tuple(
+        MarathonRace(name=str(r["name"]), date=str(r["date"])) for r in data.get("secondary_races", [])
+    )
+    data["marathons_selected"] = tuple(data.get("marathons_selected", []))
+    # Tri-state tune-up list: None (unset) stays None; a stored list rebuilds the dataclasses.
+    tune_ups = data.get("tune_up_races")
+    if tune_ups is not None:
+        data["tune_up_races"] = tuple(
+            TuneUpRace(
+                week=int(r["week"]), distance_m=float(r["distance_m"]),
+                label=str(r["label"]), target_time_s=r.get("target_time_s"),
+            )
+            for r in tune_ups
+        )
+    allowed = set(AthleteInputs.__dataclass_fields__)
+    return AthleteInputs(**{k: v for k, v in data.items() if k in allowed})
 
 
 def athlete_inputs_fingerprint(inputs: Any) -> str:

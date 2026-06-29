@@ -16,6 +16,7 @@ and **volume readiness** (where the mileage ramp safely starts — Daniels Table
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 
 from .vdot import (
     _VDOT_PREFERENCE,
@@ -293,6 +294,152 @@ def assess_freshness(
     )
 
 
+OFF_WEEK_MILES = 1.0
+
+
+def longest_running_break_days(
+    weeks: list[dict],
+    since: date,
+    today: date,
+    *,
+    off_week_miles: float = OFF_WEEK_MILES,
+) -> int:
+    """Longest streak of ISO weeks with ``< off_week_miles`` running since ``since`` (×7 days).
+
+    Daniels Table 15.1 keys on days *not running*, not mileage dips."""
+    from engine.analyze import _filter_weeks, summarize
+
+    summ = summarize(_filter_weeks(weeks, since, today))
+    weekly = sorted(summ.weekly_run_miles.items(), key=lambda kv: kv[0])
+    longest = run = 0
+    for _, miles in weekly:
+        run = run + 1 if (miles or 0.0) < off_week_miles else 0
+        longest = max(longest, run)
+    return longest * 7
+
+
+def cross_training_during_break(
+    activities: list[dict], since: date, today: date
+) -> tuple[bool, str | None]:
+    """Whether leg-aerobic cross-training occurred during ``[since, today]`` (FVDOT-2)."""
+    counts: dict[str, int] = {}
+    for a in activities:
+        sport = str(a.get("sport_type") or a.get("type") or "")
+        if sport in ("Run", "TrailRun", "VirtualRun", ""):
+            continue
+        ds = str(a.get("start_date") or a.get("start_date_local") or "")[:10]
+        try:
+            d = date.fromisoformat(ds)
+        except ValueError:
+            continue
+        if since <= d <= today:
+            counts[sport] = counts.get(sport, 0) + 1
+    if not counts:
+        return False, None
+    bucket = classify_cross_training(list(counts))
+    total = sum(counts.values())
+    summary = ", ".join(f"{k} x{v}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1]))
+    return bucket == "leg_aerobic", f"{summary} ({total} acts; {bucket})"
+
+
+@dataclass
+class MergeVdotResolution:
+    """Book-faithful VDOT for merge: pick fitness race, best break window, freshness trust."""
+
+    vdot: float                     # plan-facing number (raw if trusted, else Table 15.1)
+    raw_vdot: float
+    fitness: FitnessSelection
+    break_days: int
+    break_window: str               # "fitness_race" | "marathon"
+    cross_trained: bool
+    cross_training_note: str | None
+    freshness: Freshness
+    notes: list[str] = field(default_factory=list)
+
+
+def resolve_merge_vdot(
+    races: list[dict],
+    weeks: list[dict],
+    *,
+    marathon_date: date | None,
+    today: date,
+    activities: list[dict] | None = None,
+    excluded_dates: set[str] | None = None,
+    effort_quality: dict[str, str] | None = None,
+    time_overrides: dict[str, int] | None = None,
+    anchor_date: str | None = None,
+) -> MergeVdotResolution | None:
+    """Choose fitness race, measure break since fitness (vs marathon), maximize effective VDOT.
+
+    1. ``select_fitness_vdot`` with ``break_days=0`` picks the race (Daniels preference).
+    2. Compare break windows anchored at the fitness race vs last marathon; keep the window
+       that yields the higher Table 15.1-adjusted VDOT (break is days not running since anchor).
+    3. ``assess_freshness`` (Daniels p.219 + Table 15.1): trust raw race VDOT when the source
+       race is ≤60 d old and break ≤5 d; otherwise apply ``adjusted_vdot``.
+    """
+    fitness = select_fitness_vdot(
+        races,
+        excluded_dates=excluded_dates,
+        effort_quality=effort_quality,
+        time_overrides=time_overrides,
+        anchor_date=anchor_date,
+        break_days=0,
+        cross_trained=False,
+    )
+    if fitness.race_vdot is None or not fitness.chosen_date:
+        return None
+
+    raw_vdot = float(fitness.race_vdot)
+    fitness_date = date.fromisoformat(fitness.chosen_date[:10])
+    windows: list[tuple[str, date]] = [("fitness_race", fitness_date + timedelta(days=1))]
+    if marathon_date is not None and marathon_date != fitness_date:
+        windows.append(("marathon", marathon_date + timedelta(days=1)))
+
+    best: tuple[float, int, bool, str | None, str] | None = None
+    for label, since in windows:
+        bd = longest_running_break_days(weeks, since, today)
+        crossed, cross_note = (
+            cross_training_during_break(activities, since, today)
+            if activities
+            else (False, None)
+        )
+        eff = adjusted_vdot(raw_vdot, bd, crossed)
+        if best is None or eff > best[0]:
+            best = (eff, bd, crossed, cross_note, label)
+
+    assert best is not None
+    eff_vdot, break_days, cross_trained, cross_note, break_window = best
+    race_age_days = (today - fitness_date).days
+    cross_str = "leg_aerobic" if cross_trained else "none"
+    fresh = assess_freshness(raw_vdot, race_age_days, break_days, cross_str)
+    plan_vdot = raw_vdot if fresh.trust_race_vdot else adjusted_vdot(raw_vdot, break_days, cross_trained)
+
+    notes: list[str] = list(fitness.notes)
+    notes.append(
+        f"break window {break_window} ({break_days} d not running) → "
+        f"effective {eff_vdot} vs raw {raw_vdot}"
+    )
+    if len(windows) > 1 and break_window != "fitness_race":
+        notes.append(f"chose {break_window} window (higher effective VDOT than fitness_race)")
+    notes += fresh.notes
+    if fresh.trust_race_vdot:
+        notes.append("freshness: trust race VDOT (≤60 d, break ≤5 d)")
+    else:
+        notes.append(f"freshness: plan VDOT {plan_vdot} (Table 15.1)")
+
+    return MergeVdotResolution(
+        vdot=plan_vdot,
+        raw_vdot=raw_vdot,
+        fitness=fitness,
+        break_days=break_days,
+        break_window=break_window,
+        cross_trained=cross_trained,
+        cross_training_note=cross_note,
+        freshness=fresh,
+        notes=notes,
+    )
+
+
 # ============================================================================
 # Volume clock — safe progression, re-entry start, and recommended peak
 # ============================================================================
@@ -426,6 +573,146 @@ def goal_feasibility(
         notes.append(f"Goal needs VDOT {required}, but {build_weeks} wk realistically reaches ~{proj}. Recommend re-anchoring near the projected-fitness equivalent.")
 
     return GoalAssessment(dist_label, goal_time_s, required, current_vdot, proj, gap, verdict, realistic, notes)
+
+
+# ============================================================================
+# Tune-up result outcome — the on-track / behind verdict once a race has been run
+# ============================================================================
+# A landed tune-up result maps to a glance-level status by projecting the *measured* fitness over the
+# weeks left to race day (same heuristic as goal_feasibility): a goal still within/in-reach is on
+# track, a stretch is worth watching, an unrealistic gap is the signal to re-anchor.
+_VERDICT_TO_STATUS = {
+    "within_current": "on_track",
+    "in_reach": "on_track",
+    "stretch": "watch",
+    "unrealistic": "behind",
+}
+
+
+@dataclass
+class TuneUpOutcome:
+    status: str                    # "on_track" | "watch" | "behind"
+    verdict: str                   # underlying goal_feasibility verdict
+    measured_vdot: float
+    realistic_time_s: int | None   # defensible re-anchor target if behind/stretch
+
+
+def tune_up_outcome(measured_vdot: float, goal_time_s: int, *, weeks_remaining: int) -> TuneUpOutcome:
+    """Turn a run tune-up (its ``measured_vdot``) into an on-track/behind status for the marathon
+    goal, projecting over the weeks left. Advisory — same projection heuristic as ``goal_feasibility``."""
+    ga = goal_feasibility(measured_vdot, goal_time_s, build_weeks=max(1, weeks_remaining))
+    return TuneUpOutcome(
+        status=_VERDICT_TO_STATUS.get(ga.verdict, "watch"),
+        verdict=ga.verdict,
+        measured_vdot=measured_vdot,
+        realistic_time_s=ga.realistic_time_s,
+    )
+
+
+# ============================================================================
+# Tune-up race ladder — forward-looking VDOT feedback loop
+# ============================================================================
+@dataclass
+class TuneUpCheckpoint:
+    label: str                  # distance label, e.g. "10K"
+    distance_m: float
+    week: int                   # build week the tune-up lands in (1-based)
+    weeks_before_race: int      # how many weeks out from race day
+    date: str | None            # ISO date, when the race date is known
+    on_track_vdot: float        # interim VDOT on a straight line to the goal-required VDOT
+    on_track_time_s: int | None # target time to stay on the A-goal trajectory
+    projected_vdot: float       # realistic interim VDOT (diminishing-return curve)
+    projected_time_s: int | None
+    note: str = ""
+
+
+@dataclass
+class TuneUpLadder:
+    current_vdot: float
+    goal_time_s: int
+    required_vdot: float | None
+    projected_vdot: float
+    realistic_time_s: int | None
+    verdict: str
+    checkpoints: list[TuneUpCheckpoint] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+
+# Default ladder: a short, sharp 5K early, a 10K mid-block, and a second 10K in race prep — each at a
+# fraction of the build so the buffer is sampled as fitness (should be) rising. We deliberately do NOT
+# put a half marathon late: both Pfitzinger (ch.8 caps late tune-ups at 8-10K) and Higdon (his half
+# sits ~9-10 wk out, never near the taper) keep the closest-in races short so they don't cost the
+# recovery a peak long-run block needs. A 10K gives nearly the same fitness read at a fraction of the cost.
+_DEFAULT_TUNE_UP_LADDER: tuple[tuple[str, float], ...] = (("5K", 0.30), ("10K", 0.55), ("10K", 0.80))
+
+
+def _fmt_clock(seconds: int | None) -> str:
+    if seconds is None:
+        return "—"
+    h, rem = divmod(int(seconds), 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def tune_up_ladder(
+    current_vdot: float,
+    goal_time_s: int,
+    *,
+    build_weeks: int = 15,
+    taper_weeks: int = 3,
+    race_date: str | None = None,
+    ladder: tuple[tuple[str, float], ...] = _DEFAULT_TUNE_UP_LADDER,
+    consistency: float = 1.0,
+) -> TuneUpLadder:
+    """Forward-looking tune-up race checkpoints that turn an aggressive marathon goal into a
+    measured feedback loop. The default ladder is short/sharp (5K → 10K → 10K) and keeps the
+    closest-in race at 10K — a half marathon that late would cost the recovery a peak long-run
+    block needs (cf. Pfitzinger ch.8, Higdon). For each checkpoint we give two target times at
+    that distance:
+
+    - **on-track-for-goal** — the time that says fitness is rising on a straight line toward the
+      VDOT the goal *requires* (the A-goal trajectory).
+    - **realistic / projected** — the time at the diminishing-return projection (``projected_vdot``).
+
+    A result at/under the on-track time keeps the A-goal alive; between the two suggests a B-goal;
+    slower than projected is the signal to re-anchor the goal to the equivalent marathon time. All
+    advisory (same heuristics as ``goal_feasibility``); nothing here mutates state."""
+    ga = goal_feasibility(current_vdot, goal_time_s, build_weeks=build_weeks, consistency=consistency)
+    required = ga.required_vdot
+    total_weeks = build_weeks + max(0, taper_weeks)
+    race_d = date.fromisoformat(race_date) if race_date else None
+
+    checks: list[TuneUpCheckpoint] = []
+    for label, frac in ladder:
+        dist = RACE_METERS.get(label)
+        if dist is None:
+            continue
+        week = max(1, round(frac * build_weeks))
+        weeks_before = max(1, total_weeks - week)
+        on_track_v = round(current_vdot + (required - current_vdot) * frac, 1) if required else current_vdot
+        proj_v = projected_vdot(current_vdot, week, consistency)
+        on_track_t = predict_race_time(on_track_v, dist)
+        proj_t = predict_race_time(proj_v, dist)
+        date_iso = (race_d - timedelta(weeks=weeks_before)).isoformat() if race_d else None
+        note = (
+            f"Run \u2264 {_fmt_clock(on_track_t)} to stay on pace for {_fmt_clock(goal_time_s)}; "
+            f"{_fmt_clock(proj_t)} is the realistic mark. Slower than that \u2192 re-anchor the goal."
+        )
+        checks.append(
+            TuneUpCheckpoint(label, dist, week, weeks_before, date_iso,
+                             on_track_v, on_track_t, proj_v, proj_t, note)
+        )
+
+    notes = list(ga.notes)
+    if required:
+        notes.insert(
+            0,
+            f"Goal needs VDOT {required}; you're at {current_vdot} (projected ~{ga.projected_vdot}). The "
+            "tune-ups below tell you, mid-block, whether the goal is tracking or needs re-anchoring.",
+        )
+    return TuneUpLadder(
+        current_vdot, goal_time_s, required, ga.projected_vdot, ga.realistic_time_s, ga.verdict, checks, notes
+    )
 
 
 # ============================================================================

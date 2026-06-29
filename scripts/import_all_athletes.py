@@ -40,6 +40,7 @@ class Roster:
 
 # Known club roster (name → Strava id). Reports for all but Cindy already live in output/.
 ROSTER = [
+    Roster("tanner-chung", "Tanner Chung", "49179496"),
     Roster("kelly-hession", "Kelly Hession", "42251408"),
     Roster("nina-sayson", "Nina Sayson", "61628075"),
     Roster("rohan-shetty", "Rohan Shetty", "107176083"),
@@ -119,11 +120,15 @@ def import_one(a: Roster, base_path: Path, tmp: Path, *, dry: bool) -> str:
         return "pull_intake_failed"
 
     survey_json = tmp / f"{a.strava_id}_survey.json"
-    if not _run(
-        [PY, "scripts/merge_report_nyrr_survey.py", "--base", str(intake_json),
-         "--report", str(report), "--training", str(training), "-o", str(survey_json)],
-        timeout=STEP_TIMEOUT_S, dry=dry,
-    ):
+    merge_cmd = [
+        PY, "scripts/merge_report_nyrr_survey.py", "--base", str(intake_json),
+        "--report", str(report), "--training", str(training),
+        "--chip-search", a.name,
+        "-o", str(survey_json),
+    ]
+    if a.athlete_id == "cindy-kim":
+        merge_cmd.append("--returning-marathoner")
+    if not _run(merge_cmd, timeout=STEP_TIMEOUT_S, dry=dry):
         return "merge_failed"
 
     if not _run(

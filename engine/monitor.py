@@ -64,27 +64,13 @@ def monitor_week(
 
 def monitor_block(plan: TrainingPlan, weekly_actuals: dict[str, float]) -> list:
     """``weekly_actuals`` maps ``week_start`` ISO (Monday) -> total run miles that week."""
+    from engine.execution import week_start_for_index
+
     payloads: list = []
     for w in plan.weeks:
-        ws = _week_start_for_index(plan, w.index)
+        ws = week_start_for_index(plan, w.index)
         if not ws:
             continue
         act = weekly_actuals.get(ws, 0.0)
         payloads.extend(monitor_week(w, week_start=ws, actual_week_run_miles=act))
     return payloads
-
-
-def _week_start_for_index(plan: TrainingPlan, index: int) -> str | None:
-    """Derive ISO Monday from primary race date and week index (best-effort MVP)."""
-    from datetime import date, timedelta
-
-    try:
-        race = date.fromisoformat(plan.goal.get("date", ""))
-    except (TypeError, ValueError):
-        return None
-    try:
-        start = race - timedelta(weeks=plan.block_weeks)
-    except OverflowError:
-        return None
-    monday = start + timedelta(weeks=index - 1)
-    return monday.isoformat()
