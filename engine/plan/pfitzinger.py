@@ -213,7 +213,8 @@ def build_pfitzinger_plan(inputs: AthleteInputs, paces: dict) -> TrainingPlan:
                             tune_up_week = wk
                             week_flags.append("tune-up race (8-15K) recommended this week; recompute VDOT after")
 
-            days = common.assemble_week(inputs.days_per_week, target, fixed, easy_s, easy_str)
+            days = common.assemble_week(inputs.days_per_week, target, fixed, easy_s, easy_str,
+                                        stride_pace_s=paces.get("rep_s"))
 
         label = f"{phase}{' (down week)' if is_down else ''}"
         weeks.append(

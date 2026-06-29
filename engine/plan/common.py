@@ -415,12 +415,20 @@ def easy_pace(paces: dict) -> tuple[int, str]:
     return secs, f"{m}:{s:02d}"
 
 
-def easy_workout(miles: float, pace_s: int, pace_str: str, *, strides: bool = False) -> Workout:
+def easy_workout(
+    miles: float, pace_s: int, pace_str: str, *, strides: bool = False, stride_pace_s: int | None = None
+) -> Workout:
     # Daniels strides (p.133): light, quick 20-sec runs (not sprints), 60 s rest — added to
-    # easy days to build economy; they do NOT make the day a quality session.
+    # easy days to build economy; they do NOT make the day a quality session (kind stays EASY).
+    # The strides are structured as a trailing rep block so exporters place them "to finish".
     flags = ["6 x 20 sec strides"] if strides else []
     label = "Easy run, then 6 x 20 sec strides to finish" if strides else "Easy run"
-    return Workout(WorkoutKind.EASY, label, distance_mi=round(miles, 1), pace=pace_str, pace_s=pace_s, flags=flags)
+    segments = (
+        [Segment(reps=6, pace_label="R", pace_s=stride_pace_s, duration_s=20, recovery="60 s jog")]
+        if strides else []
+    )
+    return Workout(WorkoutKind.EASY, label, distance_mi=round(miles, 1), pace=pace_str, pace_s=pace_s,
+                   segments=segments, flags=flags)
 
 
 TEMPO_MAX_MIN = 20  # Daniels p.67: a single steady tempo run is ~20 min; beyond that, cruise intervals
@@ -886,7 +894,7 @@ def rest_day() -> Workout:
     return Workout(WorkoutKind.REST, "Rest")
 
 
-def shakeout_workout(miles: float, easy_pace_s: int, easy_str: str) -> Workout:
+def shakeout_workout(miles: float, easy_pace_s: int, easy_str: str, *, stride_pace_s: int | None = None) -> Workout:
     """Day-before-race opener: a very short, very easy jog with a few strides to stay loose
     without adding fatigue (standard marathon-week practice; Pfitzinger race-week p.108)."""
     return Workout(
@@ -895,6 +903,7 @@ def shakeout_workout(miles: float, easy_pace_s: int, easy_str: str) -> Workout:
         distance_mi=round(miles, 1),
         pace=easy_str,
         pace_s=easy_pace_s,
+        segments=[Segment(reps=4, pace_label="R", pace_s=stride_pace_s, duration_s=20, recovery="60 s jog")],
         flags=["4 x 20 sec strides"],
     )
 
@@ -905,6 +914,7 @@ def race_week_days(
     easy_pace_s: int,
     easy_str: str,
     race_day: str = LONG_RUN_DAY,
+    stride_pace_s: int | None = None,
 ) -> list[PlannedDay]:
     """Marathon week (sec.3e). The race dominates volume, so this week is **not** filled to a
     weekly mileage target like the others. Structure: a few short easy runs early in the week, a
@@ -920,7 +930,7 @@ def race_week_days(
     day_before = DAY_NAMES[ri - 1] if ri > 0 else None
     two_before = DAY_NAMES[ri - 2] if ri >= 2 else None
     if day_before:
-        workouts[day_before] = shakeout_workout(2.0, easy_pace_s, easy_str)
+        workouts[day_before] = shakeout_workout(2.0, easy_pace_s, easy_str, stride_pace_s=stride_pace_s)
 
     # Keep the marathon week deliberately light: only (days_per_week - 3) short easy runs on top
     # of the day-before shakeout and the race. The day two out stays rest.
@@ -939,7 +949,8 @@ def race_week_days(
                  + [d for d in available if d not in own_days])[:n_easy]
     lengths = [4.0, 3.0, 3.0, 3.0]
     for day, miles in zip(easy_days, lengths):
-        workouts[day] = easy_workout(miles, easy_pace_s, easy_str, strides=(day == easy_days[0]))
+        workouts[day] = easy_workout(miles, easy_pace_s, easy_str, strides=(day == easy_days[0]),
+                                     stride_pace_s=stride_pace_s)
 
     return [PlannedDay(d, workouts[d]) for d in DAY_NAMES]
 
@@ -986,6 +997,7 @@ def assemble_week(
     easy_str: str,
     stride_days: int = 1,
     max_easy_mi: float | None = None,
+    stride_pace_s: int | None = None,
 ) -> list[PlannedDay]:
     """Place ``fixed`` workouts on their days and fill the remaining run days with easy
     miles so the week sums to ~``target_mi``. Strides go on the first ``stride_days``
@@ -1013,7 +1025,8 @@ def assemble_week(
             use_strides = strides_left > 0
             if use_strides:
                 strides_left -= 1
-            days.append(PlannedDay(d, easy_workout(per, easy_pace_s, easy_str, strides=use_strides)))
+            days.append(PlannedDay(d, easy_workout(per, easy_pace_s, easy_str, strides=use_strides,
+                                                   stride_pace_s=stride_pace_s)))
         else:
             days.append(PlannedDay(d, rest_day()))
     return days

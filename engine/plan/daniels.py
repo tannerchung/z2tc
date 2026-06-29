@@ -303,7 +303,8 @@ def build_daniels_plan(inputs: AthleteInputs, paces: dict) -> TrainingPlan:
 
         if phase == "Taper" and wk == n:
             days = common.race_week_days(
-                inputs.days_per_week, race, easy_s, easy_str, race_day=_race_weekday(inputs.race_date)
+                inputs.days_per_week, race, easy_s, easy_str, race_day=_race_weekday(inputs.race_date),
+                stride_pace_s=paces.get("rep_s"),
             )
         else:
             # In the taper, cap easy days so a shortened long run sheds volume rather than
@@ -311,7 +312,7 @@ def build_daniels_plan(inputs: AthleteInputs, paces: dict) -> TrainingPlan:
             max_easy = 6.0 if phase == "Taper" else None
             days = common.assemble_week(
                 inputs.days_per_week, target, fixed, easy_s, easy_str,
-                stride_days=stride_days, max_easy_mi=max_easy,
+                stride_days=stride_days, max_easy_mi=max_easy, stride_pace_s=paces.get("rep_s"),
             )
         label = f"{phase}{' (down week)' if is_down else ''}"
         weeks.append(

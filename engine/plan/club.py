@@ -361,7 +361,8 @@ def append_marathon_double_bridge(
         if is_race:
             race = Workout(WorkoutKind.RACE, f"{second_race.name} - race day", distance_mi=_RACE_MI)
             days = common.race_week_days(
-                inputs.days_per_week, race, easy_s, easy_str, race_day=race_weekday
+                inputs.days_per_week, race, easy_s, easy_str, race_day=race_weekday,
+                stride_pace_s=plan.paces.get("rep_s"),
             )
             extra.append(
                 PlannedWeek(
@@ -431,7 +432,8 @@ def build_marathon_double(inputs: AthleteInputs) -> TrainingPlan | None:
         easy_s, easy_str = common.easy_pace(plan.paces)
         first_race = Workout(WorkoutKind.RACE, f"{first[1]} - race day", distance_mi=_RACE_MI)
         last.days = common.race_week_days(
-            eff.days_per_week, first_race, easy_s, easy_str, race_day=_race_weekday(first[0])
+            eff.days_per_week, first_race, easy_s, easy_str, race_day=_race_weekday(first[0]),
+            stride_pace_s=plan.paces.get("rep_s"),
         )
         last.label = f"{first[1]} race week"
     plan = append_marathon_double_bridge(
