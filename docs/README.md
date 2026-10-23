@@ -49,7 +49,7 @@ a topic has an owner below, link it — don't re-explain it.
 ## Citing the books
 
 Both source PDFs (Daniels 3rd ed., Pfitzinger 2nd ed.) live in the repo. Reproduce any page
-quote with [`../scripts/book_search.py`](../scripts/book_search.py) — never quote from memory.
+quote with `~/Documents/Running/Reference/book_search.py` — never quote from memory.
 The page-number offset (PDF index vs printed page) is documented in
 [`architecture/formula-reference.md`](architecture/formula-reference.md).
 

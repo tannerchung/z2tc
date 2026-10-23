@@ -269,15 +269,15 @@ python main.py publish-club --only readme         # regenerate just the Read Me 
 python main.py publish-club --only dictionary     # regenerate just the Workout Dictionary tab
 ```
 
-## `scripts/book_search.py` — cite the source books
+## `~/Documents/Running/Reference/book_search.py` — cite the source books
 
 Page-indexed search over the four training books (Daniels, Pfitzinger, Hanson, Higdon), plus the engine's curated, page-verified citations.
 
 ```bash
-python scripts/book_search.py build                       # one-time text cache (all books)
-python scripts/book_search.py search "long run" --book hanson
-python scripts/book_search.py page --book daniels --page 64
-python scripts/book_search.py cite long-run               # the long-run time-window citations the engine encodes
+python ~/Documents/Running/Reference/book_search.py build                       # one-time text cache (all books)
+python ~/Documents/Running/Reference/book_search.py search "long run" --book hanson
+python ~/Documents/Running/Reference/book_search.py page --book daniels --page 64
+python ~/Documents/Running/Reference/book_search.py cite long-run               # the long-run time-window citations the engine encodes
 ```
 
 ## Related

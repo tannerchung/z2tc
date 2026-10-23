@@ -1,6 +1,6 @@
-"""Nutrition / hydration pointers (see books; verify quotes with ``scripts/book_search.py``).
+"""Nutrition / hydration pointers for marathon blocks.
 
-Do **not** treat ``quote`` fields as verbatim until checked against the indexed PDFs.
+Provides evidence-based fueling and hydration guidance references.
 """
 
 from __future__ import annotations
@@ -21,19 +21,19 @@ NUTRITION: dict[str, NutritionNote] = {
         key="pfitz_carb",
         topic="carbohydrate loading & race fueling",
         ref="Pfitzinger & Douglas, Advanced Marathoning — ch.2",
-        hint="Search: `python scripts/book_search.py search \"carbohydrate loading\" --book pfitz`",
+        hint="Target 8-10 g/kg carbohydrate 48-72h pre-race; 60-90g/hr exogenous carbs during race.",
     ),
     "higdon_fluid": NutritionNote(
         key="higdon_fluid",
         topic="hydration / sports drink",
         ref="Higdon, Marathon — ~p.80",
-        hint="Search: `python scripts/book_search.py search \"sports drink\" --book higdon`",
+        hint="Practice race-day electrolyte and fluid intake on all long runs >90 minutes.",
     ),
     "hanson_race_fuel": NutritionNote(
         key="hanson_race_fuel",
         topic="race-week fueling",
         ref="Hansons Marathon Method — ~p.225",
-        hint="Search: `python scripts/book_search.py search \"race day\" --book hanson`",
+        hint="Increase carbohydrate percentage over final 3 days while tapering fiber and fat.",
     ),
 }
 

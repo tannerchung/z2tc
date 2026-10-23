@@ -131,6 +131,19 @@ def apply_club_policy(inputs: AthleteInputs, policy: ClubPolicy = CLUB_POLICY) -
     if inputs.tune_up_races is None:
         changes["tune_up_races"] = _default_tune_ups(inputs) if policy.schedule_tune_ups else ()
 
+    # If the athlete explicitly signed the Extended Time-on-Feet Risk Acknowledgment
+    # (`extended_long_run_risk_ack=True`) and no explicit `long_run_cap_mi` override is set,
+    # compute a safe distance cap up to 20.0 mi bounded by the 225-min (3h45m) absolute ceiling.
+    if inputs.extended_long_run_risk_ack and inputs.long_run_cap_mi is None:
+        from ..paces import training_paces
+        paces = training_paces(inputs.vdot)
+        easy_s, _ = common.easy_pace(paces)
+        long_s = common.long_run_pace_s(inputs, easy_s)
+        max_mi_in_225_min = round((common.EXTENDED_LONG_RUN_MAX_MIN * 60.0) / float(long_s), 1)
+        changes["long_run_cap_mi"] = min(common.EXTENDED_LONG_RUN_CAP_MI, max_mi_in_225_min)
+        if inputs.long_run_peak_weeks is None:
+            changes["long_run_peak_weeks"] = 1  # single peak week before taper/stepback for safety
+
     return replace(inputs, **changes) if changes else inputs
 
 

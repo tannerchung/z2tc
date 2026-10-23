@@ -28,6 +28,8 @@ DEFAULT_LONG_RUN_PEAK_WEEKS = 3              # weeks allowed at the coach long-r
 # z2tc adopts the Daniels/Hanson time ceiling and targets the 3 h upper bound, so a slower
 # runner earns the same time-on-feet credit as a faster runner's longer run.
 LONG_RUN_WINDOW_MIN = (120, 180)            # Hanson p.66: 2–3 h productive long-run window
+EXTENDED_LONG_RUN_MAX_MIN = 225             # 3h45m absolute ceiling when extended_long_run_risk_ack=True
+EXTENDED_LONG_RUN_CAP_MI = 20.0             # 20-mi psychological confidence peak when risk ack is signed
 
 DANIELS = "daniels"
 PFITZINGER = "pfitzinger"

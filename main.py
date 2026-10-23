@@ -127,6 +127,53 @@ def _cmd_check(args: argparse.Namespace) -> int:
     return 1
 
 
+def _cmd_garmin_login(args: argparse.Namespace) -> int:
+    from feeds.garmin.session import garmin_login, tokenstore_path
+
+    try:
+        client = garmin_login(args.athlete_id, email=args.email)
+    except RuntimeError as exc:
+        print(exc)
+        return 1
+
+    name = client.get_full_name()
+    print(f"Connected to Garmin as {name}. Tokens saved to {tokenstore_path(args.athlete_id)}")
+
+    # Stamp the connection on the roster athlete if they exist in the store.
+    store = Store(Path(args.db) if args.db else default_db_path())
+    try:
+        athlete = store.get_athlete(args.athlete_id)
+        if athlete is not None:
+            athlete.meta["garmin"] = {
+                "connected_at": datetime.now(timezone.utc).isoformat(),
+                "display_name": name,
+            }
+            store.upsert_athlete(athlete)
+    finally:
+        store.close()
+    return 0
+
+
+def _cmd_garmin_check(args: argparse.Namespace) -> int:
+    from feeds.garmin.session import list_connected, session_status as garmin_status
+
+    ids = [args.athlete_id] if args.athlete_id else list_connected()
+    if not ids:
+        print("No athletes have Garmin tokens. Run `python main.py garmin-login <id>`.")
+        return 1
+
+    failures = 0
+    for athlete_id in ids:
+        ok, who = garmin_status(athlete_id)
+        if ok:
+            suffix = f" as {who}" if who else ""
+            print(f"{athlete_id}: connected{suffix}")
+        else:
+            failures += 1
+            print(f"{athlete_id}: NOT connected — re-run `python main.py garmin-login {athlete_id}`")
+    return 0 if failures == 0 else 1
+
+
 def _cmd_scrape(args: argparse.Namespace) -> int:
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2008,6 +2055,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_check = sub.add_parser("check", help="Verify the saved session is logged in.")
     p_check.set_defaults(func=_cmd_check)
+
+    p_glogin = sub.add_parser(
+        "garmin-login",
+        help="Enroll an athlete's Garmin account (interactive; tokens only, no stored credentials).",
+    )
+    p_glogin.add_argument("athlete_id", help="Roster athlete id (slug) to attach the tokens to.")
+    p_glogin.add_argument("--email", default=None, help="Garmin Connect email (prompted if omitted).")
+    p_glogin.add_argument("--db", default=None, help=f"SQLite path (default: {default_db_path()}).")
+    p_glogin.set_defaults(func=_cmd_garmin_login)
+
+    p_gcheck = sub.add_parser(
+        "garmin-check",
+        help="Verify saved Garmin sessions (one athlete, or all enrolled).",
+    )
+    p_gcheck.add_argument("athlete_id", nargs="?", default=None)
+    p_gcheck.set_defaults(func=_cmd_garmin_check)
 
     p_scrape = sub.add_parser("scrape", help="Scrape one or more athlete profiles.")
     p_scrape.add_argument("athlete_ids", nargs="+", help="Strava athlete IDs.")

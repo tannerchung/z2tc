@@ -104,14 +104,14 @@ def test_citation_quotes_exist_on_cited_pages():
 
     from engine.plan import citations
 
-    idx = Path("output/book_index")
+    idx = Path.home() / "Documents" / "Running" / "Reference"
     files = {
         "Daniels": "Daniels-running-formula.jsonl",
         "Pfitzinger": "Advanced Marathoning - Pfitzinger, Pete.jsonl",
         "Hanson": "Hansons Marathon Method - Luke Humphrey.jsonl",
         "Higdon": "Marathon, Revised and Updated_ The Ultimat - Hal Higdon.jsonl",
     }
-    # A clean, bracket-free anchor phrase per citation (verified via book_search.py).
+    # A clean, bracket-free anchor phrase per citation (verified against reference library).
     anchors = {
         "daniels_long_run": "150 minutes (2.5 hours), even if preparing for a marathon",
         "hanson_long_run_window": "2:00–3:00 hours is the optimal window",
@@ -120,7 +120,7 @@ def test_citation_quotes_exist_on_cited_pages():
         "higdon_20": "Twenty miles is the longest distance that I ask people",
     }
     if not all((idx / f).exists() for f in files.values()):
-        pytest.skip("book index not built (run scripts/book_search.py build)")
+        pytest.skip("external reference index not present in ~/Documents/Running/Reference")
 
     def norm(s: str) -> str:
         return re.sub(r"\s+", " ", s).strip()

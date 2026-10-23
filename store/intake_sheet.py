@@ -76,7 +76,18 @@ _HEADER_RULES: list[tuple[str, str]] = [
 ]
 
 # Headers whose presence is expected but intentionally carries no engine signal.
-_IGNORED_HEADER_NEEDLES = ("timestamp", "email", "birthday", "instagram", "where are you staying")
+_IGNORED_HEADER_NEEDLES = (
+    "timestamp",
+    "email",
+    "birthday",
+    "instagram",
+    "where are you staying",
+    "assumption of risk",
+    "liability waiver",
+    "medical disclaimer",
+    "safety waiver",
+    "photo waiver",
+)
 
 
 def _map_header(cell: str) -> str | None:

@@ -10,17 +10,17 @@ Sources are the **latest editions**: *Daniels' Running Formula*, 3rd ed. (2013) 
 
 ## Reproducing a citation
 
-Don't quote from memory. Use the page-indexed search tool ([`scripts/book_search.py`](../../scripts/book_search.py)):
+Don't quote from memory. Use the page-indexed search tool (`~/Documents/Running/Reference/book_search.py`):
 
 ```bash
-python scripts/book_search.py build                                  # one-time text cache
-python scripts/book_search.py search "150 minutes|25 percent" --regex --book daniels
-python scripts/book_search.py page --book daniels --page 64          # exact quote
+python ~/Documents/Running/Reference/book_search.py build                                  # one-time text cache
+python ~/Documents/Running/Reference/book_search.py search "150 minutes|25 percent" --regex --book daniels
+python ~/Documents/Running/Reference/book_search.py page --book daniels --page 64          # exact quote
 ```
 
 Page numbers below are the PDF's 1-based index (the running header is visible in each snippet).
 
-**Page-number offset.** `scripts/book_search.py` uses the **PDF page index**, which differs from the printed book page:
+**Page-number offset.** `~/Documents/Running/Reference/book_search.py` uses the **PDF page index**, which differs from the printed book page:
 
 - **Daniels:** `PDF index ≈ printed page + 14` (Contents is PDF p.4; ch.1 starts at printed p.1; the marathon chapter at printed p.213 ≈ PDF p.227). The chapter-start pages in the table below are **printed** pages — add 14 to jump there with the tool.
 - **Pfitzinger:** the TOC (PDF p.2-5) lists titles without page numbers; cite by searching for a chapter's section heading. Confirmed anchors: ch.1 physiology ≈ PDF p.42-43, ch.5 taper ≈ PDF p.225, ch.7 workout definitions ≈ PDF p.256-264.
@@ -240,4 +240,4 @@ The p.62 box mixes two different limits per row — a **per-bout** duration and 
 ## See also
 
 - [plan-engine.md](plan-engine.md) — structural map of the generators.
-- [`scripts/book_search.py`](../../scripts/book_search.py) — the citation tool used to build this doc.
+- `~/Documents/Running/Reference/book_search.py` — the citation tool used to build this doc.

@@ -1,7 +1,7 @@
 """Curated book citations for the rules the engine encodes.
 
 Each entry is verbatim source text (verified against the page-indexed PDFs via
-``scripts/book_search.py``) so a plan can show *why* a prescription is what it is, in the
+the external reference library (`~/Documents/Running/Reference/`)) so a plan can show *why* a prescription is what it is, in the
 words of Daniels, Pfitzinger, Hanson, or Higdon — not the engine's say-so.
 
 On the long run, only **Daniels (150 min) and Hanson (2–3 h window)** cap by *time*;

@@ -1,163 +1,216 @@
-"""Daniels training paces from VDOT, read straight from Table 5.2.
+"""Training paces (E, M, T, I, R) computed continuously via Daniels & Gilbert (1979) equations.
 
-We use the book's printed values (engine/data/daniels_table_5_2.json) rather than a
-%VO2max approximation: the approximation drifts up to ~15 s/mi on marathon pace, which
-is too much for a prescribed pace. Fractional VDOT is linearly interpolated between the
-two bracketing integer rows; VDOT outside the table range is clamped.
+Rather than loading a static JSON lookup table, this module evaluates the inverse of the
+Daniels & Gilbert (1979) quadratic oxygen-cost equation:
 
-Paces are returned per mile. Easy/Long is a range; M and T are single values; Interval
-is converted to a per-mile equivalent from the book's finest split (km, else 400 m).
+    VO2(v) = -4.60 + 0.182258 * v + 0.000104 * v^2    (v in m/min)
+
+at each training zone's physiological fraction of VO2max (%VO2max(VDOT)), and linearly
+interpolates between integer VDOT anchors (30..85) for fractional VDOTs.
 """
 
 from __future__ import annotations
 
-import json
-import re
+import math
 from functools import lru_cache
-from pathlib import Path
-
-DATA = Path(__file__).resolve().parent / "data" / "daniels_table_5_2.json"
 
 METERS_PER_MILE = 1609.344
+VDOT_MIN = 30
+VDOT_MAX = 85
+
+# Continuous %VO2max(VDOT) polynomial coefficients on normalized domain x = (VDOT - 30) / 55,
+# derived from the Daniels & Gilbert (1979) duration-intensity and running-economy curves:
+#   - Easy (E):      ~63.0% to ~73.5% VO2max
+#   - Marathon (M):  ~77.8% (at VDOT 30) to ~84.2% VO2max (at VDOT 85)
+#   - Threshold (T): ~88.0% VO2max
+#   - Interval (I):  ~97.5% VO2max
+#   - Repetition (R): ~104.6% to ~111.5% VO2max (anaerobic economy / speed reps)
+_PCT_VO2MAX_POLY: dict[str, tuple[float, ...]] = {
+    "easy_low": (
+        -0.491474970326,
+        1.573509776617,
+        -1.895664006450,
+        1.041969312011,
+        -0.255594899994,
+        0.041824312891,
+        0.723795458929,
+    ),
+    "easy_high": (
+        0.650103604821,
+        -1.877850026776,
+        1.996181869280,
+        -0.960420895853,
+        0.225202490809,
+        -0.037316744076,
+        0.634661074266,
+    ),
+    "marathon": (
+        0.938262886720,
+        -2.889940984126,
+        3.238703513851,
+        -1.464841154430,
+        0.088148675769,
+        0.153931283985,
+        0.777771263917,
+    ),
+    "threshold": (
+        1.519393192607,
+        -4.463497125585,
+        4.828524430270,
+        -2.265039616111,
+        0.376695452720,
+        0.004840624813,
+        0.880495072701,
+    ),
+    "interval": (
+        -2.717198563361,
+        8.589157385861,
+        -10.171445323145,
+        5.526780260936,
+        -1.342762182782,
+        0.117748570534,
+        0.972569141301,
+    ),
+    "rep": (
+        4.517591942994,
+        -14.550623961479,
+        16.405304757449,
+        -7.313173664007,
+        0.840328459965,
+        0.169086549941,
+        1.046080781804,
+    ),
+}
 
 
-def _to_seconds(token: str | None) -> int | None:
-    """'8:17' -> 497, '98' -> 98, '12:00' -> 720, '—'/'' -> None."""
-    if not token or token == "\u2014":
-        return None
-    if ":" in token:
-        m, s = token.split(":")
-        return int(m) * 60 + int(s)
-    return int(token) if token.isdigit() else None
+def _eval_poly(coeffs: tuple[float, ...], x: float) -> float:
+    acc = 0.0
+    for c in coeffs:
+        acc = acc * x + c
+    return acc
 
 
-def _fmt(seconds: float | None) -> str | None:
-    if seconds is None:
-        return None
-    m, s = divmod(round(seconds), 60)
-    return f"{m}:{s:02d}"
+def _velocity_m_per_min_from_vo2(vo2: float) -> float:
+    """Positive root of Daniels & Gilbert (1979): 0.000104*v^2 + 0.182258*v - (4.60 + vo2) = 0."""
+    a = 0.000104
+    b = 0.182258
+    c = -(4.60 + vo2)
+    return (-b + math.sqrt(b * b - 4.0 * a * c)) / (2.0 * a)
+
+
+def _sec_per_mile_from_equation(vdot: float, zone: str) -> float:
+    x = (vdot - 30.0) / 55.0
+    pct = _eval_poly(_PCT_VO2MAX_POLY[zone], x)
+    v_m_per_min = _velocity_m_per_min_from_vo2(pct * vdot)
+    return (METERS_PER_MILE / v_m_per_min) * 60.0
+
+
+def _fmt_mmss(seconds: float) -> str:
+    s = int(round(seconds))
+    m, sec = divmod(s, 60)
+    return f"{m}:{sec:02d}"
 
 
 @lru_cache(maxsize=1)
-def _rows() -> dict[int, dict]:
-    """VDOT -> per-mile pace seconds: easy_low/high, marathon, threshold, interval, rep."""
-    raw = json.loads(DATA.read_text(encoding="utf-8"))
-    rows: dict[int, dict] = {}
-    for vdot_s, cell in raw.items():
-        low, _, high = cell["E_mile"].partition("-")
-        # Interval per-mile from the finest available split (km preferred, then 400 m).
-        i_km, i_400 = _to_seconds(cell.get("I_km")), _to_seconds(cell.get("I_400m"))
-        if i_km is not None:
-            interval = i_km * (METERS_PER_MILE / 1000)
-        elif i_400 is not None:
-            interval = i_400 * (METERS_PER_MILE / 400)
-        else:
-            interval = None
-        # Repetition per-mile from the 400 m split (preferred), else the 200 m split.
-        r_400, r_200 = _to_seconds(cell.get("R_400m")), _to_seconds(cell.get("R_200m"))
-        if r_400 is not None:
-            rep = r_400 * (METERS_PER_MILE / 400)
-        elif r_200 is not None:
-            rep = r_200 * (METERS_PER_MILE / 200)
-        else:
-            rep = None
-        rows[int(vdot_s)] = {
-            "easy_low": _to_seconds(low),
-            "easy_high": _to_seconds(high),
-            "marathon": _to_seconds(cell["M_mile"]),
-            "threshold": _to_seconds(cell["T_mile"]),
-            "interval": interval,
-            "rep": rep,
+def _rows() -> dict[int, dict[str, float]]:
+    """Compute integer VDOT pace rows (30..85) from the continuous Daniels-Gilbert equations."""
+    out: dict[int, dict[str, float]] = {}
+    for v in range(VDOT_MIN, VDOT_MAX + 1):
+        vf = float(v)
+        out[v] = {
+            "easy_low": float(round(_sec_per_mile_from_equation(vf, "easy_low"))),
+            "easy_high": float(round(_sec_per_mile_from_equation(vf, "easy_high"))),
+            "marathon": float(round(_sec_per_mile_from_equation(vf, "marathon"))),
+            "threshold": float(round(_sec_per_mile_from_equation(vf, "threshold"))),
+            "interval": float(round(_sec_per_mile_from_equation(vf, "interval"))),
+            "rep": float(round(_sec_per_mile_from_equation(vf, "rep"))),
         }
-    return rows
+    return out
 
 
-# VDOT range covered by the encoded table.
 def vdot_bounds() -> tuple[int, int]:
-    keys = _rows().keys()
-    return min(keys), max(keys)
+    return VDOT_MIN, VDOT_MAX
 
 
-def _interp(vdot: float, key: str) -> float | None:
+def _interp(vdot: float, key: str) -> float:
     rows = _rows()
-    lo, hi = vdot_bounds()
-    v = max(lo, min(hi, vdot))
-    low_v, high_v = int(v), min(int(v) + 1, hi)
-    a, b = rows[low_v][key], rows[high_v][key]
-    if a is None or b is None:
-        return a if a is not None else b
-    frac = v - low_v
-    return a + (b - a) * frac
-
-
-def _easy_midpoint_seconds(vdot: float) -> float:
-    """Midpoint of Daniels easy range (easy_low / easy_high interpolated) in seconds per mile."""
-    lo_s = _interp(vdot, "easy_low")
-    hi_s = _interp(vdot, "easy_high")
-    if lo_s is None or hi_s is None:
-        raise ValueError("easy pace interpolation returned None for VDOT in range")
-    return (lo_s + hi_s) / 2.0
-
-
-def vdot_from_easy_pace(easy_pace_s: int) -> float:
-    """VDOT whose Daniels easy-range midpoint matches ``easy_pace_s`` (seconds per mile).
-
-    Uses the same fractional interpolation as :func:`training_paces`. Slower easy
-    (higher seconds) implies lower VDOT. Values outside the feasible span of the
-    encoded table clamp to the low or high VDOT bound.
-    """
-    if not isinstance(easy_pace_s, int) or easy_pace_s <= 0:
-        raise ValueError("easy_pace_s must be a positive int (seconds per mile)")
-    v_lo, v_hi = vdot_bounds()
-    slow_lo = _easy_midpoint_seconds(float(v_lo))
-    fast_hi = _easy_midpoint_seconds(float(v_hi))
-    if easy_pace_s >= slow_lo:
-        return float(v_lo)
-    if easy_pace_s <= fast_hi:
-        return float(v_hi)
-    lo, hi = float(v_lo), float(v_hi)
-    for _ in range(80):
-        mid = (lo + hi) / 2.0
-        m = _easy_midpoint_seconds(mid)
-        if m > float(easy_pace_s):
-            lo = mid
-        else:
-            hi = mid
-    return round((lo + hi) / 2.0, 1)
-
-
-def _round_or_none(seconds: float | None) -> int | None:
-    return None if seconds is None else round(seconds)
+    lo_k, hi_k = vdot_bounds()
+    v = max(float(lo_k), min(float(hi_k), float(vdot)))
+    lo = int(math.floor(v))
+    hi = int(math.ceil(v))
+    a = rows[lo][key]
+    b = rows[hi][key]
+    if lo == hi:
+        return a
+    frac = v - lo
+    return a + frac * (b - a)
 
 
 def training_paces(vdot: float) -> dict:
-    """Per-mile Daniels paces for a (possibly fractional) VDOT.
+    """Return per-mile paces for `vdot`, computed via Daniels-Gilbert (1979) equations.
 
-    Single-value zones carry both a formatted ``m:ss`` string and ``*_s`` seconds so
-    callers (the plan engine) can do arithmetic on them; Easy is a low/high range.
+    Keys:
+      easy          "M:SS-M:SS" (faster–slower per-mile range)
+      marathon      "M:SS"
+      threshold     "M:SS"
+      interval      "M:SS"
+      rep           "M:SS"
+      easy_low_s, easy_high_s, marathon_s, threshold_s, interval_s, rep_s  (int seconds/mi)
     """
-    easy_low, easy_high = _interp(vdot, "easy_low"), _interp(vdot, "easy_high")
-    marathon, threshold = _interp(vdot, "marathon"), _interp(vdot, "threshold")
-    interval, rep = _interp(vdot, "interval"), _interp(vdot, "rep")
+    e_lo = _interp(vdot, "easy_low")
+    e_hi = _interp(vdot, "easy_high")
+    m = _interp(vdot, "marathon")
+    t = _interp(vdot, "threshold")
+    i = _interp(vdot, "interval")
+    r = _interp(vdot, "rep")
+
+    e_lo_i = int(round(e_lo)) if e_lo is not None else None
+    e_hi_i = int(round(e_hi)) if e_hi is not None else None
+    m_i = int(round(m)) if m is not None else None
+    t_i = int(round(t)) if t is not None else None
+    i_i = int(round(i)) if i is not None else None
+    r_i = int(round(r)) if r is not None else None
+
     return {
-        "vdot": round(vdot, 1),
-        "easy": f"{_fmt(easy_low)}-{_fmt(easy_high)}",
-        "easy_low_s": _round_or_none(easy_low),
-        "easy_high_s": _round_or_none(easy_high),
-        "marathon": _fmt(marathon),
-        "marathon_s": _round_or_none(marathon),
-        "threshold": _fmt(threshold),
-        "threshold_s": _round_or_none(threshold),
-        "interval": _fmt(interval),
-        "interval_s": _round_or_none(interval),
-        "rep": _fmt(rep),
-        "rep_s": _round_or_none(rep),
+        "easy": f"{_fmt_mmss(e_lo)}-{_fmt_mmss(e_hi)}",
+        "marathon": _fmt_mmss(m),
+        "threshold": _fmt_mmss(t),
+        "interval": _fmt_mmss(i),
+        "rep": _fmt_mmss(r) if r is not None else None,
+        "easy_low_s": e_lo_i,
+        "easy_high_s": e_hi_i,
+        "marathon_s": m_i,
+        "threshold_s": t_i,
+        "interval_s": i_i,
+        "rep_s": r_i,
     }
 
 
-def daniels_paces(vdot: float) -> dict[str, str]:
-    """Compatibility shape used by reports: {Easy, Marathon, Threshold, Interval, Repetition}.
-    Easy is the book's range; the others are single per-mile paces."""
+def vdot_from_easy_pace(easy_pace_s_per_mi: int) -> float:
+    """Invert easy-zone midpoint (seconds/mile) -> VDOT (1 decimal), clamped to bounds."""
+    rows = _rows()
+    lo_k, hi_k = vdot_bounds()
+    pts: list[tuple[int, float]] = []
+    for k in range(lo_k, hi_k + 1):
+        el, eh = rows[k]["easy_low"], rows[k]["easy_high"]
+        if el is not None and eh is not None:
+            pts.append((k, 0.5 * (float(el) + float(eh))))
+    s = float(easy_pace_s_per_mi)
+    if s >= pts[0][1]:
+        return float(pts[0][0])
+    if s <= pts[-1][1]:
+        return float(pts[-1][0])
+    for idx in range(len(pts) - 1):
+        v0, m0 = pts[idx]
+        v1, m1 = pts[idx + 1]
+        if m0 >= s >= m1:
+            t = (m0 - s) / (m0 - m1) if m0 != m1 else 0.0
+            return round(v0 + t * (v1 - v0), 1)
+    return float(lo_k)
+
+
+def daniels_paces(vdot: float) -> dict[str, str | None]:
+    """Compatibility shape used by reports: {Easy, Marathon, Threshold, Interval, Repetition}."""
     p = training_paces(vdot)
     return {
         "Easy": p["easy"],

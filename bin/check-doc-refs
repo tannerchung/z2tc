@@ -51,6 +51,8 @@ def _candidate_paths(raw: str) -> list[str]:
     for p in parts:
         if p in ALLOW_MISSING:
             continue
+        if p.startswith("~/") or p.startswith("/"):
+            continue
         if "/" not in p and not p.endswith(".py") and not p.endswith(".md"):
             continue
         if not (p.endswith(".py") or p.endswith(".md") or p.endswith(".sh") or p.endswith(".txt")):

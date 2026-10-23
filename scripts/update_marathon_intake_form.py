@@ -289,6 +289,33 @@ def _append_universal_items(start_index: int) -> list[dict]:
             },
         }
     )
+    add(
+        {
+            "title": "Detour Run Club — Assumption of Risk, Medical Disclaimer & Liability Waiver",
+            "description": (
+                "By checking the box below, I acknowledge and agree that: (1) Detour Run Club "
+                "(formerly Zone 2 Track Club) training plans, pacing targets, and readiness scores "
+                "are automated mathematical scheduling aids and do NOT constitute medical advice, "
+                "physical therapy, or supervised coaching; (2) distance running and marathon training "
+                "involve inherent risks of serious musculoskeletal injury, heat illness, traffic/road "
+                "hazards, cardiac events, and death; (3) I am physically fit and cleared by a physician "
+                "to participate; and (4) I voluntarily assume all risks and release Detour Run Club, "
+                "its organizers, contributors, and affiliates from any and all liability for injury, "
+                "illness, or damages arising out of my participation in group runs or use of these plans."
+            ),
+            "questionItem": {
+                "question": {
+                    "required": True,
+                    "choiceQuestion": {
+                        "type": "CHECKBOX",
+                        "options": [
+                            {"value": "I have read, understand, and agree to the Assumption of Risk, Medical Disclaimer, and Liability Waiver."},
+                        ],
+                    },
+                }
+            },
+        }
+    )
     return reqs
 
 

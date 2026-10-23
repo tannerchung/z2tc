@@ -156,12 +156,17 @@ class AthleteInputs:
     marathon_stay_description: str | None = None
     social_carb_load: str | None = None              # yes | maybe | unknown
     social_shakeout: str | None = None
-    # Closing-form free text (see docs/intake-and-engine.md). Engine ignores; merge/coach
+    #Closing-form free text (see docs/intake-and-engine.md). Engine ignores; merge/coach
     # uses for scheduling tips, deliverables, and secondary-race context.
     intake_races_vacations_notes: str | None = None  # races/vacations during the block
     intake_coaching_extras_notes: str | None = None  # nutrition, playlist, shoes, other tips
     secondary_marathon_notes: str | None = None      # extra context for B/secondary marathon
     free_notes: str | None = None                    # catch-all “anything else?”
+    # Informed-consent gate for extended time-on-feet (>180 min) so slower runners (>= 9:30/mi easy)
+    # can build up to an 18-20 mi psychological-confidence peak (capped at 225 min / 3h45m) with
+    # mandatory Run/Walk fueling and recovery-week guardrails.
+    extended_long_run_risk_ack: bool = False
+    waiver_accepted_at: str | None = None            # ISO timestamp of clickwrap liability waiver acceptance
 
 
 def training_plan_goal_payload(inputs: AthleteInputs) -> dict:

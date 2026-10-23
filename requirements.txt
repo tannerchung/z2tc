@@ -1,5 +1,9 @@
 playwright==1.49.0
 
+# Garmin Connect ingestion (per-athlete token auth; see feeds/garmin/session.py)
+garminconnect==0.3.6
+curl_cffi==0.15.0
+
 # Google Sheets renderer (reuses an existing authorized-user token; see render/runtime.py)
 google-api-python-client==2.197.0
 google-auth==2.54.0
