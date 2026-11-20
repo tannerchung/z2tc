@@ -72,6 +72,15 @@ Allowed kinds and required fields:
   computes them.
 - ManualOverride: field (must be a valid AthleteInputs dataclass field name), value
   (JSON type matching that field).
+- FuelingLog: optional activity_id, run_date (YYYY-MM-DD), pre_run_carbs_g, gels_count,
+  carbs_g_per_hr, total_carbs_g, sodium_mg, fluid_oz, caffeine_mg, gi_distress_1_to_5 (1-5),
+  bonk_mile, products_used (list of strings, e.g. ["Maurten 100", "Maurten 160"]), note.
+- DailyMacroHydration: log_date (YYYY-MM-DD), optional source_app (macrofactor|myfitnesspal|cronometer|apple_health|manual),
+  calories_kcal, carbs_g, carbs_g_per_kg, protein_g, fat_g, fluid_oz, sodium_mg, alcohol_drinks, note.
+- SetCoachingScope: optional enable_fueling_guidance (bool), enable_hydration_weather (bool),
+  enable_biomechanics_forensics (bool), enable_readiness_gates (bool), sweat_sodium_tier (low|moderate|salty),
+  sweat_rate_ml_per_hr (int), preferred_gel (str), fuel_comfort_profile (str),
+  workout_limiter_focus (balanced|form_stiffness|lactate_shuttle|hill_strength), note.
 
 Omit kinds that are not clearly supported by the text. Return [] if nothing applies."""
 
@@ -82,7 +91,7 @@ def _gemini_api_key() -> str | None:
 
 
 def _gemini_model_name() -> str:
-    return (os.environ.get("Z2TC_GEMINI_MODEL") or "gemini-3.5-flash").strip()
+    return (os.environ.get("Z2TC_GEMINI_MODEL") or "gemini-4-hydrogen").strip()
 
 
 def _parse_iso_date(value: str) -> date | None:
@@ -162,6 +171,12 @@ def _payload_date_fields(payload: EventPayload) -> list[tuple[str, str]]:
             ("start", getattr(payload, "start", "")),
             ("end", getattr(payload, "end", "")),
         ]
+    if k in ("FuelingLog", "BiomechanicsBlock", "EnvironmentalContext"):
+        rd = getattr(payload, "run_date", "") or ""
+        return [("run_date", rd)] if rd.strip() else []
+    if k in ("DailyMacroHydration", "AutonomicReadiness"):
+        ld = getattr(payload, "log_date", "") or ""
+        return [("log_date", ld)] if ld.strip() else []
     return []
 
 

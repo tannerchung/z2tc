@@ -193,9 +193,9 @@ def test_extract_events_gemini_empty_json_falls_back_to_stub(
     assert recs[0].payload.kind == "WeeklyEvaluation"
 
 
-def test_gemini_model_name_defaults_to_3_5_flash(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_gemini_model_name_defaults_to_4_hydrogen(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("Z2TC_GEMINI_MODEL", raising=False)
-    assert _gemini_model_name() == "gemini-3.5-flash"
+    assert _gemini_model_name() == "gemini-4-hydrogen"
 
 
 def test_extract_events_gemini_raises_falls_back_to_stub_with_warning(
@@ -220,7 +220,7 @@ def test_extract_events_gemini_raises_falls_back_to_stub_with_warning(
     assert recs[0].payload.kind == "Difficulty"
     err = capsys.readouterr().err
     assert "Gemini extraction failed" in err
-    assert "gemini-3.5-flash" in err
+    assert "gemini-4-hydrogen" in err
     assert "NOT_FOUND" in err
     assert "falling back to stub" in err
 
@@ -396,6 +396,11 @@ def test_event_payload_date_like_fields_are_grounded_or_trusted() -> None:
             "FitnessAnchor",
             "SetRaceDate",
             "Unavailable",
+            "FuelingLog",
+            "BiomechanicsBlock",
+            "DailyMacroHydration",
+            "AutonomicReadiness",
+            "EnvironmentalContext",
         }
     )
     trusted_kinds = frozenset({"AdherenceFlag", "EasyPaceDrift", "FatigueFlag", "OverreachFlag"})
@@ -426,6 +431,11 @@ def test_event_payload_date_like_fields_are_grounded_or_trusted() -> None:
         },
         "SetRaceDate": {"kind": "SetRaceDate", "race_date": "2026-10-10"},
         "Unavailable": {"kind": "Unavailable", "start": "2026-06-01", "end": "2026-06-07", "reason": ""},
+        "FuelingLog": {"kind": "FuelingLog", "run_date": "2026-06-01"},
+        "BiomechanicsBlock": {"kind": "BiomechanicsBlock", "activity_id": "a1", "run_date": "2026-06-01"},
+        "DailyMacroHydration": {"kind": "DailyMacroHydration", "log_date": "2026-06-01"},
+        "AutonomicReadiness": {"kind": "AutonomicReadiness", "log_date": "2026-06-01"},
+        "EnvironmentalContext": {"kind": "EnvironmentalContext", "run_date": "2026-06-01"},
     }
     trusted_samples: dict[str, dict] = {
         "AdherenceFlag": {
