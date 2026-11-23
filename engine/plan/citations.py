@@ -170,6 +170,46 @@ CITATIONS: dict[str, Citation] = {
         "program, Tuesdays and Thursdays are easy days, when runners go only 3 to 5 miles, most often "
         "running at a conversational pace.",
     ),
+    "lydiard_aerobic_base": Citation(
+        key="lydiard_aerobic_base",
+        author="Lydiard (via RRCA Level II)",
+        book="Running to the Top / RRCA Important Coaching Figures",
+        pages="Ch. 1-3; RRCA L2 06:00",
+        rule="sequential periodization pyramid: high-volume conversational aerobic base (LSD) "
+        "precedes hill strength, race-specific anaerobic intervals, peak race, and recovery",
+        quote="Emphasis on base training, development of periodized programs: high mileage phase, "
+        "followed by strength phase, then race-specific intervals, race, recovery.",
+    ),
+    "bowerman_conversational_pace": Citation(
+        key="bowerman_conversational_pace",
+        author="Bowerman & Harris",
+        book="Jogging (via RRCA Level II)",
+        pages="RRCA L2 07:49",
+        rule="run base and recovery days at a genuine conversational pace while alternating "
+        "hard stress days with easy regeneration days",
+        quote="Jogging for health; conversation pace during base training; periodization "
+        "towards performance.",
+    ),
+    "galloway_walk_break_bridge": Citation(
+        key="galloway_walk_break_bridge",
+        author="Galloway",
+        book="Galloway's Book on Running (via RRCA Level II)",
+        pages="RRCA L2 10:20",
+        rule="planned run/walk micro-recovery intervals apply elite interval rest mechanics "
+        "to preserve form and reduce orthopedic load for novices and injury returnees",
+        quote="Health and wellness through the same principles as elite racing — work hard and "
+        "rest — via the Run/Walk method.",
+    ),
+    "noakes_hyponatremia_ceiling": Citation(
+        key="noakes_hyponatremia_ceiling",
+        author="Noakes",
+        book="Waterlogged (2012; via RRCA Level II)",
+        pages="RRCA L2 14:10",
+        rule="avoid forced hypotonic over-drinking ahead of thirst in multi-hour marathons "
+        "(exercise-associated hyponatremia risk); decouple fluid volume from carb gel intake",
+        quote="Challenges conventional wisdom about hydration: drink to thirst rather than "
+        "over-consuming hypotonic fluid ahead of thirst, preventing hyponatremia.",
+    ),
 }
 
 # Ordered for display: the unifying time-window rule first, then the per-method distances.

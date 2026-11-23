@@ -752,6 +752,71 @@ def descending_intervals_workout(cap_mi: float, pace_s: int, pace_str: str) -> W
     )
 
 
+def hill_repeats_workout(cap_mi: float, interval_s: int, interval_str: str) -> Workout:
+    """Short-to-medium uphill repeats (Runna 'Hill Repeats'; Brad Hudson *Run Faster* neuromuscular
+    power & soleus/Achilles spring stiffness builder). Prescribes 6 to 8 x 60 sec uphill at ~5K
+    effort with an easy jog down recovery."""
+    reps = max(6, min(8, round(cap_mi * 2.5)))
+    seg = Segment(reps=reps, pace_label="R", pace_s=interval_s, duration_s=60, recovery="jog down recovery")
+    work_mi = round((reps * 120 * (1.0 / max(240, interval_s))), 1)
+    return Workout(
+        WorkoutKind.REP,
+        _prescribe(
+            "Hill repeats",
+            f"{reps} x 60 sec uphill @ 5K effort ({interval_str}/mi flat eq.) w/ jog down recovery",
+        ),
+        distance_mi=round(max(1.5, work_mi) + WARMUP_MI + COOLDOWN_MI, 1),
+        pace=interval_str,
+        pace_s=interval_s,
+        segments=[seg],
+    )
+
+
+def canova_alternations_workout(cap_mi: float, t_s: int, t_str: str, mp_s: int, mp_str: str) -> Workout:
+    """Renato Canova / Pfitzinger lactate-shuttle alternations: continuous 1 km (0.62 mi) at
+    Threshold alternating with 1 km at Marathon Pace, training active lactate clearance at race pace."""
+    sets = max(3, min(5, round(cap_mi * 0.9)))
+    segs: list[Segment] = []
+    for _ in range(sets):
+        segs.append(Segment(reps=1, pace_label="T", pace_s=t_s, distance_m=1000))
+        segs.append(Segment(reps=1, pace_label="M", pace_s=mp_s, distance_m=1000))
+    work_mi = (sets * 2000) / METERS_PER_MILE
+    return Workout(
+        WorkoutKind.THRESHOLD,
+        _prescribe(
+            "Canova alternations",
+            f"{sets} x (1000 m @ Threshold ({t_str}/mi) / 1000 m @ MP ({mp_str}/mi)) nonstop",
+        ),
+        distance_mi=round(work_mi + WARMUP_MI + COOLDOWN_MI, 1),
+        pace=t_str,
+        pace_s=t_s,
+        segments=segs,
+    )
+
+
+def mona_fartlek_workout(cap_mi: float, i_s: int, i_str: str) -> Workout:
+    """Steve Moneghetti / Runna time-based fartlek: 2x90s, 4x60s, 4x30s, 4x15s hard (~5K effort)
+    with equal float jogs (20 min continuous clock work, ideal for parks/travel without track splits)."""
+    segs = [
+        Segment(reps=2, pace_label="I", pace_s=i_s, duration_s=90, recovery="90 s float jog"),
+        Segment(reps=4, pace_label="I", pace_s=i_s, duration_s=60, recovery="60 s float jog"),
+        Segment(reps=4, pace_label="I", pace_s=i_s, duration_s=30, recovery="30 s float jog"),
+        Segment(reps=4, pace_label="I", pace_s=i_s, duration_s=15, recovery="15 s float jog"),
+    ]
+    work_mi = round((20.0 * 60.0) / max(240, i_s + 30), 1)
+    return Workout(
+        WorkoutKind.INTERVAL,
+        _prescribe(
+            "Mona fartlek",
+            f"2x90s, 4x60s, 4x30s, 4x15s @ 5K effort ({i_str}/mi) w/ equal float jog (20 min nonstop)",
+        ),
+        distance_mi=round(work_mi + WARMUP_MI + COOLDOWN_MI, 1),
+        pace=i_str,
+        pace_s=i_s,
+        segments=segs,
+    )
+
+
 def progression_long_run(total_mi: float, easy_s: int, easy_str: str, mp_s: int, mp_str: str) -> Workout:
     """Thirds progression long run (Humphrey/Daniels-friendly): easy → steady → marathon pace,
     nonstop. Teaches pacing discipline and finishing strong on tired legs with less injury risk

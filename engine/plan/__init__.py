@@ -163,7 +163,7 @@ def build_club_plan(inputs: AthleteInputs) -> TrainingPlan:
     inputs, build through the pure :func:`build_plan`, then seat the club's tune-up races into the
     plan (a method-agnostic post-process, so every club plan gets the feedback-loop races, not just
     Daniels). Production code builds club plans."""
-    from .club import build_marathon_double
+    from .club import annotate_informal_fueling, build_marathon_double
 
     resolved = apply_club_policy(inputs)
     double = build_marathon_double(resolved)
@@ -172,4 +172,6 @@ def build_club_plan(inputs: AthleteInputs) -> TrainingPlan:
         plan = common.apply_cross_training(
             plan, resolved.cross_training_days, minutes=resolved.cross_training_minutes
         )
+    if resolved.enable_fueling_guidance:
+        plan = annotate_informal_fueling(plan, resolved)
     return plan

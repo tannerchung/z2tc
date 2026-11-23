@@ -174,6 +174,158 @@ class WeeklyEvaluationPayload(BaseModel):
     note: str = ""
 
 
+class FuelingLogPayload(BaseModel):
+    """Per-activity intra-run & pre-run fueling telemetry parsed from Strava notes or Kip chat."""
+
+    kind: Literal["FuelingLog"] = "FuelingLog"
+    activity_id: str | None = None
+    run_date: str = ""
+    pre_run_carbs_g: float | None = Field(default=None, ge=0)
+    gels_count: float | None = Field(default=None, ge=0)
+    carbs_g_per_hr: float | None = Field(default=None, ge=0)
+    total_carbs_g: float | None = Field(default=None, ge=0)
+    sodium_mg: float | None = Field(default=None, ge=0)
+    fluid_oz: float | None = Field(default=None, ge=0)
+    caffeine_mg: float | None = Field(default=None, ge=0)
+    gi_distress_1_to_5: int | None = Field(default=None, ge=1, le=5)
+    bonk_mile: float | None = Field(default=None, ge=0)
+    products_used: list[str] = Field(default_factory=list)
+    note: str = ""
+
+
+class BiomechanicsBlockPayload(BaseModel):
+    """Deterministic 1 Hz block forensics summary (Chicago Marathon 4-signature diagnostic model).
+    Gracefully handles missing sensor channels across Tier 1 (Pace+HR), Tier 2 (Wrist Power+Dynamics),
+    and Tier 3 (Chest Strap / Footpod Lab)."""
+
+    kind: Literal["BiomechanicsBlock"] = "BiomechanicsBlock"
+    activity_id: str
+    run_date: str = ""
+    distance_mi: float | None = Field(default=None, ge=0)
+    avg_pace_s_per_mi: int | None = Field(default=None, ge=180, le=1800)
+    avg_hr_bpm: float | None = Field(default=None, ge=40, le=240)
+    avg_power_w: float | None = Field(default=None, ge=0, le=1000)
+    avg_cadence_spm: float | None = Field(default=None, ge=100, le=260)
+    avg_gct_ms: float | None = Field(default=None, ge=120, le=450)
+    gct_balance_left_pct: float | None = Field(default=None, ge=40.0, le=60.0)
+    avg_stride_length_m: float | None = Field(default=None, ge=0.4, le=2.5)
+    avg_vertical_ratio_pct: float | None = Field(default=None, ge=2.0, le=20.0)
+    pw_hr_decoupling_pct: float | None = None
+    pa_hr_decoupling_pct: float | None = None
+    late_run_gct_delta_ms: float | None = None
+    late_run_cadence_delta_spm: float | None = None
+    diagnostic_signature: Literal[
+        "optimal_steady",
+        "glycogen_depletion",
+        "neuromuscular_form_fade",
+        "thermal_cardiac_drift",
+        "asymmetric_guarding",
+        "insufficient_sensors",
+    ] = "optimal_steady"
+    sensor_tier: Literal[
+        "tier1_pace_hr",
+        "tier2_wrist_power_dynamics",
+        "tier3_chest_pod_lab",
+    ] = "tier1_pace_hr"
+    note: str = ""
+
+
+class HardwareSensorProfilePayload(BaseModel):
+    """Tracks athlete watch, heart rate sensor, and footpod capabilities so coaching prescriptions
+    and forensic scripts know which telemetry channels exist vs. require subjective RPE fallbacks."""
+
+    kind: Literal["HardwareSensorProfile"] = "HardwareSensorProfile"
+    watch_ecosystem: Literal["garmin", "coros", "apple_watch", "polar", "suunto", "phone_strava"] = "garmin"
+    watch_model: str = ""
+    hr_sensor_type: Literal["wrist_optical", "chest_strap_ecg", "armband_optical", "none"] = "wrist_optical"
+    power_source: Literal["garmin_wrist", "coros_wrist", "apple_wrist", "stryd_footpod", "none"] = "none"
+    has_gct_and_stride: bool = False
+    has_gct_lr_balance: bool = False
+    has_overnight_hrv: bool = False
+    has_workout_fit_push: bool = True
+    note: str = ""
+
+
+class DailyMacroHydrationPayload(BaseModel):
+    """Daily or pre-long-run carb-load & hydration summary synced from MacroFactor, MyFitnessPal,
+    Cronometer, Apple Health, or athlete self-report."""
+
+    kind: Literal["DailyMacroHydration"] = "DailyMacroHydration"
+    log_date: str = ""
+    source_app: Literal["macrofactor", "myfitnesspal", "cronometer", "apple_health", "manual"] = "manual"
+    calories_kcal: int | None = Field(default=None, ge=0)
+    carbs_g: float | None = Field(default=None, ge=0)
+    carbs_g_per_kg: float | None = Field(default=None, ge=0)
+    protein_g: float | None = Field(default=None, ge=0)
+    fat_g: float | None = Field(default=None, ge=0)
+    fluid_oz: float | None = Field(default=None, ge=0)
+    sodium_mg: float | None = Field(default=None, ge=0)
+    alcohol_drinks: float | None = Field(default=None, ge=0)
+    note: str = ""
+
+
+class AutonomicReadinessPayload(BaseModel):
+    """Morning autonomic nervous system (HRV rMSSD / RHR / sleep) gate for dynamic workout modulation."""
+
+    kind: Literal["AutonomicReadiness"] = "AutonomicReadiness"
+    log_date: str = ""
+    hrv_rmssd_ms: float | None = Field(default=None, ge=5, le=300)
+    hrv_7d_baseline_ms: float | None = Field(default=None, ge=5, le=300)
+    rhr_bpm: float | None = Field(default=None, ge=30, le=120)
+    sleep_hours: float | None = Field(default=None, ge=0, le=24)
+    sleep_score: int | None = Field(default=None, ge=0, le=100)
+    cycle_phase: Literal["follicular", "ovulatory", "luteal", "menstrual", "unspecified"] = "unspecified"
+    readiness_gate: Literal["green", "yellow", "red"] = "green"
+    note: str = ""
+
+
+class ShoeRotationGearPayload(BaseModel):
+    """Tracks shoe mileage and foam category (daily trainer vs. carbon race shoe) to separate
+    dead-foam calf/GCT degradation from physiological fatigue."""
+
+    kind: Literal["ShoeRotationGear"] = "ShoeRotationGear"
+    strava_gear_id: str = ""
+    brand_model: str = ""
+    shoe_category: Literal["daily_trainer", "super_trainer", "carbon_race", "trail", "recovery"] = "daily_trainer"
+    cumulative_miles: float = Field(default=0.0, ge=0)
+    retire_threshold_miles: float = Field(default=350.0, ge=50)
+    is_retired: bool = False
+    note: str = ""
+
+
+class EnvironmentalContextPayload(BaseModel):
+    """Per-activity weather, WBGT/dew point, wind, and bridge/surface context."""
+
+    kind: Literal["EnvironmentalContext"] = "EnvironmentalContext"
+    activity_id: str | None = None
+    run_date: str = ""
+    temp_f: float | None = None
+    dew_point_f: float | None = None
+    humidity_pct: float | None = Field(default=None, ge=0, le=100)
+    wbgt_f: float | None = None
+    wind_mph: float | None = Field(default=None, ge=0)
+    surface_type: Literal["road", "track", "treadmill", "trail", "bridges_hills"] = "road"
+    heat_pace_adjustment_s_per_mi: int = Field(default=0, ge=0, le=180)
+    note: str = ""
+
+
+class SetCoachingScopePayload(BaseModel):
+    """Progressively enables or updates informal coaching modules (fueling, hydration, biomechanics,
+    readiness, limiter focus) without bombarding the athlete during Week 1 onboarding."""
+
+    kind: Literal["SetCoachingScope"] = "SetCoachingScope"
+    enable_fueling_guidance: bool | None = None
+    enable_hydration_weather: bool | None = None
+    enable_biomechanics_forensics: bool | None = None
+    enable_readiness_gates: bool | None = None
+    sweat_sodium_tier: Literal["low", "moderate", "salty"] | None = None
+    sweat_rate_ml_per_hr: int | None = Field(default=None, ge=200, le=3000)
+    preferred_gel: str | None = None
+    fuel_comfort_profile: str | None = None
+    workout_limiter_focus: Literal["balanced", "form_stiffness", "lactate_shuttle", "hill_strength"] | None = None
+    note: str = ""
+
+
 EventPayload = Annotated[
     Union[
         InjuryPayload,
@@ -196,6 +348,14 @@ EventPayload = Annotated[
         DataExcludePayload,
         FitnessAnchorPayload,
         WeeklyEvaluationPayload,
+        FuelingLogPayload,
+        BiomechanicsBlockPayload,
+        HardwareSensorProfilePayload,
+        DailyMacroHydrationPayload,
+        AutonomicReadinessPayload,
+        ShoeRotationGearPayload,
+        EnvironmentalContextPayload,
+        SetCoachingScopePayload,
     ],
     Field(discriminator="kind"),
 ]
@@ -240,6 +400,14 @@ def parse_event_payload(data: dict) -> EventPayload:
         "DataExclude": DataExcludePayload,
         "FitnessAnchor": FitnessAnchorPayload,
         "WeeklyEvaluation": WeeklyEvaluationPayload,
+        "FuelingLog": FuelingLogPayload,
+        "BiomechanicsBlock": BiomechanicsBlockPayload,
+        "HardwareSensorProfile": HardwareSensorProfilePayload,
+        "DailyMacroHydration": DailyMacroHydrationPayload,
+        "AutonomicReadiness": AutonomicReadinessPayload,
+        "ShoeRotationGear": ShoeRotationGearPayload,
+        "EnvironmentalContext": EnvironmentalContextPayload,
+        "SetCoachingScope": SetCoachingScopePayload,
     }
     cls = table.get(kind or "")
     if cls is None:

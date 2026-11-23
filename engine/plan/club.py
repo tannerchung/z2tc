@@ -470,3 +470,30 @@ def build_marathon_double(inputs: AthleteInputs) -> TrainingPlan | None:
         )
     plan.flags = list(plan.flags) + [note]
     return plan
+
+
+def annotate_informal_fueling(plan: TrainingPlan, inputs: AthleteInputs) -> TrainingPlan:
+    """When ``inputs.enable_fueling_guidance`` is True, attach an informal 1-line fueling/hydration
+    pointer to each build week whose long run is >= 90 minutes. Never alters Workout.label."""
+    if not inputs.enable_fueling_guidance:
+        return plan
+    from .race_fuel import nutrition_for_long_run
+
+    easy_s, _ = common.easy_pace(plan.paces)
+    long_pace_s = common.long_run_pace_s(inputs, easy_s)
+    for w in plan.weeks:
+        lr = w.long_run
+        if lr is None or not lr.miles:
+            continue
+        dur_min = (lr.miles * long_pace_s) / 60.0
+        if dur_min < 90.0:
+            continue
+        guidance = nutrition_for_long_run(dur_min, inputs)
+        if guidance is None:
+            continue
+        c_lo, c_hi = guidance.carbs_g_per_hr
+        f_lo, f_hi = guidance.fluid_ml_per_hr
+        w.flags = list(w.flags) + [
+            f"fueling_tip: ~{c_lo}-{c_hi}g carbs/hr & {f_lo}-{f_hi}mL fluid/hr — {guidance.notes}"
+        ]
+    return plan

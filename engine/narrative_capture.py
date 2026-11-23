@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import re
+from typing import Any
 
 
 def _now_iso() -> str:
@@ -92,6 +94,58 @@ def build_narrative_captures(
             )
         )
     return out
+
+
+_DEFAULT_STRAVA_TITLE_RE = re.compile(
+    r"^\s*(morning|lunch|afternoon|evening|night)\s+(run|walk|virtual\s+run|trail\s+run|workout)\s*$",
+    re.IGNORECASE,
+)
+
+
+def compute_narrative_sha256(activity: dict[str, Any]) -> str:
+    """Deterministic SHA-256 fingerprint of an activity's unstructured narrative & metadata fields.
+    Used to detect delayed Strava title/description/private_note edits (24–72h post-run) without
+    re-running LLM extraction when nothing changed."""
+    import hashlib
+
+    name = str(activity.get("name") or "").strip()
+    desc = str(activity.get("description") or "").strip()
+    priv = str(activity.get("private_note") or "").strip()
+    rpe = str(activity.get("perceived_exertion") or "").strip()
+    wtype = str(activity.get("workout_type") or "").strip()
+    gear = str(activity.get("gear_id") or "").strip()
+    canonical = f"{name}\x1f{desc}\x1f{priv}\x1f{rpe}\x1f{wtype}\x1f{gear}"
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def is_default_strava_title(title: str | None) -> bool:
+    """Return True if ``title`` is blank or a generic auto-generated Strava title ('Morning Run')."""
+    if not title or not str(title).strip():
+        return True
+    return bool(_DEFAULT_STRAVA_TITLE_RE.match(str(title)))
+
+
+def needs_post_run_narrative_nudge(
+    activity: dict[str, Any],
+    *,
+    min_long_run_miles: float = 10.0,
+) -> bool:
+    """Return True when a paid coached athlete uploads a key session (Long Run >= ``min_long_run_miles``,
+    Race ``workout_type == 1``, or Workout ``workout_type == 3``) with no description/private_note and
+    only a default Strava title ('Morning Run'). Prevents spamming nudges on routine easy recovery runs."""
+    desc = str(activity.get("description") or "").strip()
+    priv = str(activity.get("private_note") or "").strip()
+    if desc or priv:
+        return False
+    title = str(activity.get("name") or "").strip()
+    if not is_default_strava_title(title):
+        return False
+    dist_m = float(activity.get("distance") or activity.get("distance_m") or 0.0)
+    miles = dist_m / 1609.344 if dist_m > 100 else float(activity.get("miles") or 0.0)
+    wtype = activity.get("workout_type")
+    is_key_session = miles >= min_long_run_miles or wtype in (1, 2, 3)
+    return bool(is_key_session)
+
 
 
 @dataclass

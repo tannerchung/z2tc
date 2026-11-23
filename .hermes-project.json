@@ -1,0 +1,11 @@
+{
+  "path": "/Users/tanner/Documents/Projects/detour-engine",
+  "git_remote": "https://github.com/tannerchung/z2tc.git",
+  "git_branch": "main",
+  "name": "Detour Engine",
+  "description": "Deterministic physiological intelligence, continuous VDOT/pace solving, marathon plan generation, and event-sourced replanning kernel",
+  "type": "training-engine",
+  "framework": "python",
+  "parent": "detour-brand",
+  "brand_family": "detour"
+}

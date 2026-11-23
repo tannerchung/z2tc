@@ -48,7 +48,11 @@ def default_db_path(project_root: Path | None = None) -> Path:
     root = project_root or Path(__file__).resolve().parents[1]
     out = root / "output"
     out.mkdir(parents=True, exist_ok=True)
-    return out / "z2tc.db"
+    primary = out / "detour.db"
+    legacy = out / "z2tc.db"
+    if not primary.exists() and legacy.exists():
+        return legacy
+    return primary
 
 
 class Store:

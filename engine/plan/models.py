@@ -167,6 +167,20 @@ class AthleteInputs:
     # mandatory Run/Walk fueling and recovery-week guardrails.
     extended_long_run_risk_ack: bool = False
     waiver_accepted_at: str | None = None            # ISO timestamp of clickwrap liability waiver acceptance
+    # Fueling & gut comfort (calibrates long-run carb count and gel timing)
+    preferred_gel: str | None = None                     # free text + fuel catalog: e.g. "Maurten Gel 100 (25g)"
+    fuel_comfort_profile: str | None = None              # "High-Carb Ready (60-90g/hr)", "Hydrogel/Isotonic Preferred", "Gradual Gut-Builder", "Chews/Liquid/Real Food Only"
+    # Progressive Coaching Scope Flags (default False so Day-1 onboarding stays focused on pure training targets)
+    enable_fueling_guidance: bool = False                # when True, attach informal 1-line fueling tips to long runs >= 90 min
+    enable_hydration_weather: bool = False               # when True, scale fluid/sodium hints by sweat_sodium_tier & temp/dew point
+    enable_biomechanics_forensics: bool = False          # when True, surface 4-signature 1 Hz block diagnostics in weekly review
+    enable_readiness_gates: bool = False                 # when True, modulate quality days on AutonomicReadiness red gates
+    sweat_sodium_tier: str | None = None                 # "low" | "moderate" | "salty"
+    sweat_rate_ml_per_hr: int | None = None              # optional measured 60-min scale test sweat rate
+    last_gi_distress_score: int | None = None            # 1..5 from most recent FuelingLogPayload; >=3 steps down g/hr target
+    ambient_temp_f: float | None = None                  # optional forecast/recent long-run temperature for informal hydration scaling
+    ambient_dew_point_f: float | None = None             # optional forecast dew point
+    workout_limiter_focus: str | None = None             # None | "balanced" | "form_stiffness" | "lactate_shuttle" | "hill_strength"
 
 
 def training_plan_goal_payload(inputs: AthleteInputs) -> dict:
@@ -386,3 +400,22 @@ class TrainingPlan:
     generated_at: str | None = None
     scenario: PlanScenarioMeta | None = None       # set when this plan is one of a peak scenario set
     sibling_scenarios: tuple["TrainingPlan", ...] = ()  # other scenarios from same build (empty for single)
+
+
+# ---------------------------------------------------------------------------
+# Nutrition guidance (fueling + hydration prescription)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class NutritionGuidance:
+    """Carbs, fluid, and sodium targets for one long run or race.
+
+    All ranges are `(low, high)` in g or mL per hour. ``notes`` is athlete-specific prose
+    (gel brand, packet timing, gut-comfort advice).
+    """
+
+    carbs_g_per_hr: tuple[int, int]
+    fluid_ml_per_hr: tuple[int, int]
+    sodium_mg_per_hr: tuple[int, int]
+    notes: str

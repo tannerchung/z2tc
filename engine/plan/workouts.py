@@ -52,6 +52,9 @@ class CatalogWorkout:
     purpose: str             # what it's for (the Workout Dictionary definition)
     generation: str          # how the engine sizes/paces it (mileage cap + VDOT/goal pace)
     build: Callable[[WeekContext], Workout]
+    category: str = "lactate_threshold"
+    source_lineage: str = "Daniels"
+    targets_limiter: str = "aerobic_capacity"
 
 
 def _cruise_mile(c: WeekContext) -> Workout:
@@ -147,78 +150,126 @@ def _long_fartlek(c: WeekContext) -> Workout:
     return common.long_run_fartlek(c.long_mi, c.easy_s, c.easy_str)
 
 
+def _hill_repeats(c: WeekContext) -> Workout:
+    return common.hill_repeats_workout(c.caps["R"], c.paces["interval_s"], c.paces["interval"])
+
+
+def _canova_alternations(c: WeekContext) -> Workout:
+    return common.canova_alternations_workout(
+        c.caps["T"], c.paces["threshold_s"], c.paces["threshold"], c.mp_s, c.mp_str
+    )
+
+
+def _mona_fartlek(c: WeekContext) -> Workout:
+    return common.mona_fartlek_workout(c.caps["I"], c.paces["interval_s"], c.paces["interval"])
+
+
 CATALOG_WORKOUTS: tuple[CatalogWorkout, ...] = (
     # --- Threshold (T): comfortably-hard, lactate-clearance. Pace = VDOT T; volume ≤ 10% week.
     CatalogWorkout("cruise_mile", "Cruise intervals", "T",
                    "Mile threshold repeats with short 60 s jogs that bank T volume above a 20-min tempo (Daniels p.67).",
-                   "reps = (10%-week T cap) ÷ 1 mi, at VDOT threshold pace, 60 s jog between.", _cruise_mile),
+                   "reps = (10%-week T cap) ÷ 1 mi, at VDOT threshold pace, 60 s jog between.", _cruise_mile,
+                   category="lactate_threshold", source_lineage="Daniels", targets_limiter="lactate_clearance"),
     CatalogWorkout("tempo", "Tempo run", "T",
                    "One continuous comfortably-hard effort at threshold for confidence and lactate clearance (Daniels).",
-                   "single block capped at ~20 min (T cap if shorter), at VDOT threshold pace.", _tempo),
+                   "single block capped at ~20 min (T cap if shorter), at VDOT threshold pace.", _tempo,
+                   category="lactate_threshold", source_lineage="Daniels/Pfitzinger", targets_limiter="lactate_clearance"),
     CatalogWorkout("broken_t", "Broken-T intervals", "T",
                    "Half-mile threshold repeats for more reps at the same T stimulus with a sharper feel (Daniels).",
-                   "reps = T cap ÷ 0.5 mi, at VDOT threshold pace, 60 s jog.", _broken_t),
+                   "reps = T cap ÷ 0.5 mi, at VDOT threshold pace, 60 s jog.", _broken_t,
+                   category="lactate_threshold", source_lineage="Daniels", targets_limiter="lactate_clearance"),
     CatalogWorkout("over_unders", "Over/unders", "T",
                    "Alternate threshold (over) and marathon pace (under), nonstop, for rhythm changes at race paces (Runna).",
-                   "≈ T-cap reps of 0.5 mi @ T / 0.5 mi @ goal MP, nonstop.", _over_unders),
+                   "≈ T-cap reps of 0.5 mi @ T / 0.5 mi @ goal MP, nonstop.", _over_unders,
+                   category="lactate_shuttle", source_lineage="Runna", targets_limiter="lactate_shuttle"),
+    CatalogWorkout("canova_alternations", "Canova alternations", "T",
+                   "1000 m at threshold alternating nonstop with 1000 m at marathon pace to clear lactate at race pace (Canova/Pfitzinger).",
+                   "3 to 5 sets of 1000 m @ T / 1000 m @ goal MP nonstop, bounded by T cap.", _canova_alternations,
+                   category="lactate_shuttle", source_lineage="Canova/Pfitzinger", targets_limiter="lactate_shuttle"),
     CatalogWorkout("tempo_ladder", "Threshold ladder", "T",
                    "Descending threshold blocks (long to short) with 60 s jogs for the same T effort in a varied shape (Runna 2-1-1).",
-                   "T cap split 50/25/25 into 3 blocks at VDOT threshold pace, 60 s jog.", _tempo_ladder),
+                   "T cap split 50/25/25 into 3 blocks at VDOT threshold pace, 60 s jog.", _tempo_ladder,
+                   category="lactate_threshold", source_lineage="Runna", targets_limiter="lactate_clearance"),
     # --- Interval (I): VO2max / aerobic power. Pace = VDOT I; volume ≤ 8% week (≤10 km).
     CatalogWorkout("vo2_intervals", "VO2max intervals", "I",
                    "1000 m reps at about 5K effort with equal-time jog for VO2max and aerobic power (Daniels I).",
-                   "reps = (8%-week I cap) ÷ 1000 m, at VDOT interval pace, equal-time jog.", _vo2_intervals),
+                   "reps = (8%-week I cap) ÷ 1000 m, at VDOT interval pace, equal-time jog.", _vo2_intervals,
+                   category="vo2max_aerobic_power", source_lineage="Daniels", targets_limiter="aerobic_ceiling"),
     CatalogWorkout("vo2_1200", "VO2max intervals (1200s)", "I",
                    "1200 m reps at I pace, Daniels' preferred VO2max rep for slower runners (3 to 5 min work).",
-                   "reps = I cap ÷ 1200 m, at VDOT interval pace, equal-time jog.", _vo2_1200),
+                   "reps = I cap ÷ 1200 m, at VDOT interval pace, equal-time jog.", _vo2_1200,
+                   category="vo2max_aerobic_power", source_lineage="Daniels/Pfitzinger", targets_limiter="aerobic_ceiling"),
     CatalogWorkout("vo2_pyramid", "VO2max pyramid", "I",
                    "400-800-1200-800-400 m pyramid at I pace for the same VO2max stimulus in varied rep lengths.",
-                   "fixed pyramid (~3.6 km work) at VDOT interval pace, equal-time jog; wu/cd absorbs cap.", _vo2_pyramid),
+                   "fixed pyramid (~3.6 km work) at VDOT interval pace, equal-time jog; wu/cd absorbs cap.", _vo2_pyramid,
+                   category="vo2max_aerobic_power", source_lineage="Daniels/Runna", targets_limiter="aerobic_ceiling"),
     CatalogWorkout("descending_i", "Descending intervals", "I",
                    "1200-1000-800-600-400 m at I pace, where shortening reps keep pace honest as fatigue builds.",
-                   "fixed descending set at VDOT interval pace, equal-time jog.", _descending_i),
+                   "fixed descending set at VDOT interval pace, equal-time jog.", _descending_i,
+                   category="vo2max_aerobic_power", source_lineage="Daniels", targets_limiter="aerobic_ceiling"),
     CatalogWorkout("drop_set", "Drop set", "I",
                    "1000-800-600-400-200 m descending ladder at I pace, short and sharp with a fast finish (Runna).",
-                   "fixed drop ladder at VDOT interval pace, equal-time jog.", _drop_set),
-    # --- Repetition (R): speed + economy. Pace = VDOT R; volume ≤ 5% week (≤5 mi).
+                   "fixed drop ladder at VDOT interval pace, equal-time jog.", _drop_set,
+                   category="vo2max_aerobic_power", source_lineage="Runna", targets_limiter="aerobic_ceiling"),
+    CatalogWorkout("mona_fartlek", "Mona fartlek", "I",
+                   "2x90s, 4x60s, 4x30s, 4x15s at 5K effort with equal float jog, a classic 20-min clock workout for parks and travel (Moneghetti/Runna).",
+                   "20 min continuous clock surges at VDOT interval effort with equal float jogs.", _mona_fartlek,
+                   category="vo2max_aerobic_power", source_lineage="Moneghetti/Runna", targets_limiter="aerobic_ceiling"),
+    # --- Repetition (R): speed + economy + hills. Pace = VDOT R; volume ≤ 5% week (≤5 mi).
     CatalogWorkout("speed_reps", "Speed reps", "R",
                    "Short fast 400 m reps at Rep pace with full recovery for speed and running economy (Daniels R).",
-                   "reps = (5%-week R cap) ÷ 400 m, at VDOT rep pace, full 400 m jog.", _speed_reps),
+                   "reps = (5%-week R cap) ÷ 400 m, at VDOT rep pace, full 400 m jog.", _speed_reps,
+                   category="neuromuscular_speed", source_lineage="Daniels", targets_limiter="form_stiffness"),
     CatalogWorkout("short_reps", "Speed reps (200s)", "R",
                    "200 m reps at Rep pace for pure turnover and neuromuscular work (Daniels p.135).",
-                   "reps = R cap ÷ 200 m (≥8), at VDOT rep pace, full 200 m jog.", _short_reps),
+                   "reps = R cap ÷ 200 m (≥8), at VDOT rep pace, full 200 m jog.", _short_reps,
+                   category="neuromuscular_speed", source_lineage="Daniels", targets_limiter="form_stiffness"),
     CatalogWorkout("rolling_400s", "Rolling 400s", "R",
                    "400 m reps at Rep pace with only a 200 m jog float for continuous rhythm and turnover (Runna).",
-                   "reps = R cap ÷ 400 m, at VDOT rep pace, short 200 m jog (no full recovery).", _rolling_400s),
+                   "reps = R cap ÷ 400 m, at VDOT rep pace, short 200 m jog (no full recovery).", _rolling_400s,
+                   category="neuromuscular_speed", source_lineage="Runna", targets_limiter="form_stiffness"),
+    CatalogWorkout("hill_repeats", "Hill repeats", "R",
+                   "6 to 8 x 60 sec uphill repeats at 5K effort with jog down recovery to build calf/soleus spring stiffness (Hudson/Runna).",
+                   "6 to 8 x 60 sec uphill surges bounded by R cap, easy jog down recovery.", _hill_repeats,
+                   category="hill_strength", source_lineage="Hudson/Runna", targets_limiter="form_stiffness"),
     # --- Marathon pace (M): goal-pace rehearsal. Pace = goal MP (from A-goal time).
     CatalogWorkout("mp_reps", "Race-pace reps", "M",
                    "Short half-mile reps at goal marathon pace with 60 s jog, a low-fatigue race-rhythm rehearsal for the taper (Runna).",
-                   "reps = (trimmed M cap, ≤3 mi) ÷ 0.5 mi, at goal MP, 60 s jog.", _mp_reps),
+                   "reps = (trimmed M cap, ≤3 mi) ÷ 0.5 mi, at goal MP, 60 s jog.", _mp_reps,
+                   category="marathon_specific", source_lineage="Runna", targets_limiter="pacing_discipline"),
     CatalogWorkout("mp_run", "Race-pace run", "M",
                    "Continuous goal-marathon-pace miles, a midweek race-practice run for goal pace, rhythm and fueling (Pfitzinger MP; Higdon pace run).",
-                   "min(M cap, 6 mi) continuous at goal MP, with an easy warm-up and cool-down.", _mp_run),
+                   "min(M cap, 6 mi) continuous at goal MP, with an easy warm-up and cool-down.", _mp_run,
+                   category="marathon_specific", source_lineage="Pfitzinger/Higdon", targets_limiter="pacing_discipline"),
     # --- Long runs: sized by daniels_long_run (time-on-feet / 30-25% share / 18-mi cap).
     CatalogWorkout("long_easy", "Long run (easy)", "long",
                    "Steady aerobic long run for time on feet and durability (all four authors' staple).",
-                   "distance = min(3 h time-on-feet at observed long pace, 18 mi, 30–25% of week); all easy.", _long_easy),
+                   "distance = min(3 h time-on-feet at observed long pace, 18 mi, 30–25% of week); all easy.", _long_easy,
+                   category="aerobic_endurance", source_lineage="Daniels/Pfitzinger/Hansons/Higdon", targets_limiter="glycogen_depletion"),
     CatalogWorkout("long_fartlek", "Long run w/ fartlek", "long",
                    "Easy long run with brief ~1 min surges sprinkled in for light turnover that breaks up the run (Humphrey).",
-                   "same easy long-run distance; ~one 1-min surge per 1.5 mi (stays an aerobic day).", _long_fartlek),
+                   "same easy long-run distance; ~one 1-min surge per 1.5 mi (stays an aerobic day).", _long_fartlek,
+                   category="aerobic_endurance", source_lineage="Hansons", targets_limiter="form_stiffness"),
     CatalogWorkout("mp_blend", "Marathon long run", "long",
                    "Daniels 2Q nonstop E/M/(T)/M/E blend that banks race-pace volume inside the long run (Table 14.3).",
-                   "long-run distance; ~half at goal MP (≤ M cap) with a 1-mi T surge, rest easy.", _mp_blend),
+                   "long-run distance; ~half at goal MP (≤ M cap) with a 1-mi T surge, rest easy.", _mp_blend,
+                   category="marathon_specific", source_lineage="Daniels", targets_limiter="lactate_shuttle"),
     CatalogWorkout("progression", "Progression long run", "long",
                    "Thirds that build easy to steady to marathon pace for pacing discipline and a low-risk strong finish (Humphrey/Higdon 3/1).",
-                   "long-run distance split in thirds, easy then steady (E↔MP midpoint) then goal MP.", _progression),
+                   "long-run distance split in thirds, easy then steady (E↔MP midpoint) then goal MP.", _progression,
+                   category="marathon_specific", source_lineage="Hansons/Higdon", targets_limiter="pacing_discipline"),
     CatalogWorkout("mp_blocks", "Marathon-pace blocks", "long",
                    "Two MP blocks split by an easy float for race rhythm, fueling rehearsal and more banked MP (Runna 'Block').",
-                   "long-run distance; 2 × (≈25%, ≤ M cap/2) blocks at goal MP, 1-mi easy float, easy wu/cd.", _mp_blocks),
+                   "long-run distance; 2 × (≈25%, ≤ M cap/2) blocks at goal MP, 1-mi easy float, easy wu/cd.", _mp_blocks,
+                   category="marathon_specific", source_lineage="Runna", targets_limiter="glycogen_depletion"),
     CatalogWorkout("fast_finish", "Fast-finish long run", "long",
                    "Mostly easy and closed at marathon pace for late-race grit, kept controlled (McMillan; Humphrey).",
-                   "long-run distance; final block (≤ M cap, ≤40%) at goal MP, rest easy.", _fast_finish),
+                   "long-run distance; final block (≤ M cap, ≤40%) at goal MP, rest easy.", _fast_finish,
+                   category="marathon_specific", source_lineage="McMillan/Hansons", targets_limiter="glycogen_depletion"),
     CatalogWorkout("race_practice", "Race-practice long run", "long",
                    "A dress rehearsal with one sustained MP block (the build's longest) for goal pace, fueling and kit (Pfitzinger; Runna).",
-                   "long-run distance; one continuous MP block = min(M cap, distance − 3 mi), easy wu/cd.", _race_practice),
+                   "long-run distance; one continuous MP block = min(M cap, distance − 3 mi), easy wu/cd.", _race_practice,
+                   category="marathon_specific", source_lineage="Pfitzinger/Runna", targets_limiter="glycogen_depletion"),
 )
 
 _BY_KEY = {w.key: w for w in CATALOG_WORKOUTS}
@@ -273,3 +324,17 @@ def long_run_for_phase(phase: str, occ: int, ctx: WeekContext) -> Workout:
 def named(key: str, ctx: WeekContext) -> Workout:
     """Build one catalog session by key (e.g. the final ``race_practice`` dress rehearsal)."""
     return _BY_KEY[key].build(ctx)
+
+
+def workouts_by_category() -> dict[str, tuple[CatalogWorkout, ...]]:
+    """Group ``CATALOG_WORKOUTS`` by their physiological ``category``."""
+    grouped: dict[str, list[CatalogWorkout]] = {}
+    for w in CATALOG_WORKOUTS:
+        grouped.setdefault(w.category, []).append(w)
+    return {k: tuple(v) for k, v in grouped.items()}
+
+
+def workouts_for_limiter(limiter: str) -> tuple[CatalogWorkout, ...]:
+    """Return all catalog workouts tagged as addressing ``limiter`` (e.g. ``form_stiffness``)."""
+    q = (limiter or "").strip().lower()
+    return tuple(w for w in CATALOG_WORKOUTS if w.targets_limiter.lower() == q)

@@ -49,12 +49,15 @@ _TEMPO_RE = re.compile(r"^Tempo run:")
 _CRUISE_RE = re.compile(r"^Cruise intervals:")
 _BROKENT_RE = re.compile(r"^Broken-T intervals:")
 _OVERUNDER_RE = re.compile(r"^Over/unders:")
+_CANOVA_ALT_RE = re.compile(r"^Canova alternations:")
 _TLADDER_RE = re.compile(r"^Threshold ladder:")
 _VO2_LADDER_RE = re.compile(r"^VO2max pyramid:")
 _VO2_DESC_RE = re.compile(r"^Descending intervals:")
 _DROPSET_RE = re.compile(r"^Drop set:")
+_MONA_RE = re.compile(r"^Mona fartlek:")
 _VO2_RE = re.compile(r"^VO2max intervals:")
 _ROLLING_RE = re.compile(r"^Rolling 400s:")
+_HILL_RE = re.compile(r"^Hill repeats:")
 _REPS_RE = re.compile(r"^Speed reps:")
 _MPREPS_RE = re.compile(r"^Race-pace reps:")
 _MPRUN_RE = re.compile(r"^Race-pace run:")
@@ -132,6 +135,12 @@ def explain_workout_label(label: str) -> str:
             "instead of jogging trains pace changes at race-adjacent efforts, and it is bracketed by a "
             "1.5 mi easy warm-up and cool-down."
         )
+    if _CANOVA_ALT_RE.match(text):
+        return (
+            "Alternate 1000 m at threshold with 1000 m at goal marathon pace, nonstop (Canova/Pfitzinger). "
+            "It trains your muscles to use lactate as fuel at marathon pace rather than needing a slow "
+            "jog recovery, and it includes a 1.5 mi easy warm-up and cool-down."
+        )
     if _TLADDER_RE.match(text):
         return (
             "Descending threshold blocks (one long, then shorter) at comfortably-hard threshold pace "
@@ -150,6 +159,12 @@ def explain_workout_label(label: str) -> str:
             "recoveries (Runna). It is short and sharp, finishing fast on tired legs, and it includes "
             "a 1.5 mi easy warm-up and cool-down."
         )
+    if _MONA_RE.match(text):
+        return (
+            "A 20-minute continuous clock fartlek (2x90s, 4x60s, 4x30s, 4x15s at about 5K effort with "
+            "equal float jogs between, from Steve Moneghetti and Runna), bracketed by a 1.5 mi easy "
+            "warm-up and cool-down."
+        )
     if _VO2_LADDER_RE.match(text):
         return (
             "A 400-800-1200-800-400 m pyramid at about 5K effort with equal-time jog recoveries "
@@ -166,6 +181,12 @@ def explain_workout_label(label: str) -> str:
             "400 m reps at Rep pace (about mile race pace) with only a short 200 m jog float between "
             "(Runna). It is a continuous, rhythm-focused turnover set with less recovery than full "
             "speed reps, and it includes a 1.5 mi easy warm-up and cool-down."
+        )
+    if _HILL_RE.match(text):
+        return (
+            "6 to 8 uphill repeats of 60 seconds at about 5K effort with an easy jog down recovery "
+            "(Brad Hudson and Runna). Uphill work builds calf, soleus and Achilles spring stiffness "
+            "with lower impact forces than flat track reps, plus a 1.5 mi easy warm-up and cool-down."
         )
     if _REPS_RE.match(text):
         return (

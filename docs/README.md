@@ -11,6 +11,7 @@ a topic has an owner below, link it — don't re-explain it.
   layout, conventions. **Read order starts here.**
 - [`architecture/overview.md`](architecture/overview.md) — the layer + data-flow map (CLI →
   feeds → analysis → plan engine → store → render). Owns: *how the pieces connect*.
+- [`architecture/multi-interface-architecture.md`](architecture/multi-interface-architecture.md) — the **Multi-Interface Architecture & Execution Plan** (Detour UI, Detour AI, Athlete's Own AI / MCP). Owns: *ecosystem integration and surface contracts*.
 
 ## The model (how athlete data becomes a plan)
 

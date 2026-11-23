@@ -15,7 +15,9 @@ from store.events import (
     DataExcludePayload,
     DifficultyPayload,
     EffortQualityPayload,
+    EnvironmentalContextPayload,
     FitnessAnchorPayload,
+    FuelingLogPayload,
     EasyPaceDriftPayload,
     FatigueFlagPayload,
     InjuryPayload,
@@ -24,6 +26,7 @@ from store.events import (
     MissedQualityPayload,
     OverreachFlagPayload,
     RaceEstimatePayload,
+    SetCoachingScopePayload,
     SetDaysPayload,
     SetGoalPayload,
     SetRaceDatePayload,
@@ -82,6 +85,34 @@ def _apply_payload(inputs: AthleteInputs, payload: Any) -> AthleteInputs:
             updates["reentry_start_mpw"] = mpw
         if payload.easy_pace_override_s is not None:
             updates["easy_pace_override_s"] = int(payload.easy_pace_override_s)
+        return replace(inputs, **updates) if updates else inputs
+    if isinstance(payload, SetCoachingScopePayload):
+        updates: dict[str, object] = {}
+        for field_name in (
+            "enable_fueling_guidance",
+            "enable_hydration_weather",
+            "enable_biomechanics_forensics",
+            "enable_readiness_gates",
+            "sweat_sodium_tier",
+            "sweat_rate_ml_per_hr",
+            "preferred_gel",
+            "fuel_comfort_profile",
+            "workout_limiter_focus",
+        ):
+            val = getattr(payload, field_name)
+            if val is not None:
+                updates[field_name] = val
+        return replace(inputs, **updates) if updates else inputs
+    if isinstance(payload, FuelingLogPayload):
+        if payload.gi_distress_1_to_5 is not None:
+            return replace(inputs, last_gi_distress_score=int(payload.gi_distress_1_to_5))
+        return inputs
+    if isinstance(payload, EnvironmentalContextPayload):
+        updates = {}
+        if payload.temp_f is not None:
+            updates["ambient_temp_f"] = float(payload.temp_f)
+        if payload.dew_point_f is not None:
+            updates["ambient_dew_point_f"] = float(payload.dew_point_f)
         return replace(inputs, **updates) if updates else inputs
     if isinstance(
         payload,
@@ -166,6 +197,21 @@ def fold_events_to_inputs(
                 parts.append(f"easy_s/mi={payload.easy_pace_override_s}")
             tail = f" ({payload.note})" if payload.note else ""
             extra_flags.append("coach_note: weekly-evaluation " + " ".join(parts) + tail)
+        if isinstance(payload, SetCoachingScopePayload):
+            active = [
+                k for k in (
+                    "enable_fueling_guidance",
+                    "enable_hydration_weather",
+                    "enable_biomechanics_forensics",
+                    "enable_readiness_gates",
+                )
+                if getattr(payload, k) is True
+            ]
+            if payload.sweat_sodium_tier:
+                active.append(f"sweat={payload.sweat_sodium_tier}")
+            if payload.workout_limiter_focus:
+                active.append(f"limiter={payload.workout_limiter_focus}")
+            extra_flags.append(f"coaching_scope: {', '.join(active) or 'updated'}")
         cur = _apply_payload(cur, payload)
     return cur, extra_flags
 

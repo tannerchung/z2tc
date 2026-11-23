@@ -1,0 +1,17 @@
+# Iterative Staged Rollout Plan: `MVP (Stage 0)` $\rightarrow$ `Stage 1` $\rightarrow$ `Stage 2` $\rightarrow$ `Stage 3` (`detour-engine` + `detour-web`)
+
+## Goal
+Decompose the Detour Adaptive Training & Persona-Calibration initiative into **4 small, independently shippable PR stages (`MVP / Stage 0` $\rightarrow$ `Stage 1` $\rightarrow$ `Stage 2` $\rightarrow$ `Stage 3`)** so you can click through and validate the core UX hypothesis (**Tanner Metrics Mode vs. Cindy "Tell Me What To Do + A Little Why" Mode + Applied `E/M/T/I/R` + HITL Pace Comfort Check**) in **15 minutes with zero existing files touched**, before layering on multi-distance NYRR curve analytics, database schema persistence, and production funnel wiring.
+
+---
+
+## Why This Slicing Gives You the Fastest Self-Feedback Loop
+
+| Stage | What Ships in That PR | Existing Files Modified | Time to Build & Test | Your Self-Feedback Gate Before Moving On |
+| :--- | :--- | :--- | :--- | :--- |
+| **MVP (Stage 0)** | **The Core Loop Prototype:** `engine/pace_calibration.py` + `tests/test_pace_calibration.py` + `public/data/engine-prototype-bundle.json` + standalone `public/training.html`. Lets you switch between **Tanner (`#53014284`)**, **Cindy (`#54608206`)**, and **Maya (First-Timer)**, toggle **Tanner vs. Cindy vs. First-Timer Mode**, read the **Applied `E/M/T/I/R` Talk-Test Guide**, click the **4 HITL Pace Comfort Buttons**, and watch a **7-day schedule** transform live. | **0 existing files touched** (100% additive, zero blast radius) | **~15 mins** | Open `/training` on your laptop/phone. Test your view in **Tanner Mode** and show Cindy her view in **Cindy Mode**. Confirm the `E/M/T/I/R` explanations and 4 comfort buttons feel right. |
+| **Stage 1** | **Official Race Curve Analyzer + 23-Workout Catalog:** Adds `analyze_official_race_curve()` (`5K` $\rightarrow$ `10K` $\rightarrow$ `Half` $\rightarrow$ `Marathon` VDOT drop-off + GPS bridge-bounce reconciliation) and the filterable **23-Workout Catalog** (`CATALOG_WORKOUTS`) to `/training.html`. | Only `pace_calibration.py` & `training.html` | **~15 mins** | Verify your `-6.3 VDOT` marathon fade (`lactate_shuttle`) vs. Cindy's `-2.2 VDOT` curve (`form_stiffness`) and click through the workout catalog. |
+| **Stage 2** | **Continuous Post-Onboarding Coaching Voice Loop + 4-Week Progressive Disclosure:** Adds schema persistence (`AthleteInputs`, `SurveyInputs`, `SetCoachingScopePayload`), the **Coaching Voice Switcher (`Direct` / `Warm` / `Accountability`)**, and the **Week 1 $\rightarrow$ Week 4 $\rightarrow$ Week 10 $\rightarrow$ Week 13 Progressive Disclosure Scrubber**. | 3 schema files in `detour-engine` + `training.html` | **~15 mins** | Test switching coaching voice post-onboarding and scrubbing `Week 1 -> Week 4` (`LR >= 12mi` fueling unlock). |
+| **Stage 3** | **Production Funnel & Entity Firewall Wiring:** Adds `Tier 0` (501c3 Orange) vs. `Tiers 1–3` (LLC Cyan) switcher, points `/coaching -> /training` in `vercel.json`, adds nav links in `profile.html` & `connect.html`, and wires `?tier=&persona=&voice=&comfort=` into `/coaching-intake.html`. | Existing `detour-web` funnel pages | **~15 mins** | End-to-end click test from `/profile` $\rightarrow$ `/training` $\rightarrow$ `/coaching-intake`. |
+
+(Full copy-pasteable code and TDD verification commands for **Stage 0 (MVP)** are in `/Users/tanner/.hermes/plans/2026-11-13_230505-detour-iterative-staged-mvp-plan.md`.)

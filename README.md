@@ -1,8 +1,13 @@
-# z2tc — Zone 2 Track Club training platform
+# detour-engine — Detour Run Club Deterministic Training & Physiological Intelligence Engine
 
 Training-data ingestion and a **deterministic** VDOT / pace / marathon-plan engine for
-Zone 2 Track Club. Strava is one **feed**; the engine that turns race results into
+Detour Run Club (formerly Zone 2 Track Club / `z2tc`). Strava is one **feed**; the engine that turns race results into
 training paces is pure, testable code (no LLM in the number path).
+
+**Multi-Interface Architecture:** Designed as a headless computational kernel consumable by:
+1. **Detour UI** (Primary Web App / Next.js / Vercel Marathon Hub)
+2. **Detour AI** (Coach Kip / Hermes Agent via Telegram/WhatsApp)
+3. **Athlete's Own AI** (Headless Model Context Protocol / MCP Server / Bring-Your-Own-Agent)
 
 **Current capabilities:** Strava feed (logged-in profile + week-by-week history), an
 analysis engine (calendar, mileage, race detection, VDOT, Daniels paces, marathon-block

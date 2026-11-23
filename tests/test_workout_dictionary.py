@@ -55,3 +55,29 @@ def test_dictionary_format_requests_build():
     assert reqs
     assert any("mergeCells" in r for r in reqs)
     assert any(r.get("updateSheetProperties", {}).get("properties", {}).get("gridProperties") for r in reqs)
+
+
+def test_catalog_workouts_have_structured_taxonomy_and_new_archetypes():
+    from engine.plan.workouts import workouts_by_category, workouts_for_limiter
+
+    keys = {w.key for w in CATALOG_WORKOUTS}
+    assert {"hill_repeats", "canova_alternations", "mona_fartlek"}.issubset(keys)
+    for w in CATALOG_WORKOUTS:
+        assert w.category in {
+            "lactate_threshold",
+            "lactate_shuttle",
+            "vo2max_aerobic_power",
+            "neuromuscular_speed",
+            "hill_strength",
+            "marathon_specific",
+            "aerobic_endurance",
+        }, w.key
+        assert w.source_lineage, w.key
+        assert w.targets_limiter, w.key
+
+    form_fixes = [w.key for w in workouts_for_limiter("form_stiffness")]
+    assert "hill_repeats" in form_fixes and "rolling_400s" in form_fixes
+
+    by_cat = workouts_by_category()
+    assert "lactate_shuttle" in by_cat and "hill_strength" in by_cat
+
